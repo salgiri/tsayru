@@ -1,0 +1,20 @@
+{
+  "name": "tsayru-server",
+  "version": "0.1.0",
+  "description": "HTTP inbox + MCP server companion for the tsayru Chrome extension.",
+  "private": true,
+  "type": "module",
+  "main": "http.js",
+  "scripts": {
+    "start": "node http.js",
+    "mcp": "node mcp.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.2.1",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

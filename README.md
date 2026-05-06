@@ -23,6 +23,15 @@ Chrome extension для аннотирования UI-элементов зад�
 
 ## Установка (dev)
 
-1. Открыть `chrome://extensions`
-2. Включить Developer mode
-3. Load unpacked → выбрать папку `extension/`
+1. `npm install` (один раз)
+2. `npm run build` — собирает `src/index.js` + дерево импортов в `extension/content.js` через esbuild.
+   - Альтернатива при активной разработке: `npm run watch` — пересборка при сохранении.
+3. Открыть `chrome://extensions`
+4. Включить Developer mode
+5. Load unpacked → выбрать папку `extension/`
+6. После любых правок `src/**` — пересобрать (`npm run build`) и нажать ⟳ в `chrome://extensions`.
+
+## Структура
+
+- `src/` — ESM-модули (core, selector, framework, sidebar, modal, inspector, format, index).
+- `extension/` — то, что Chrome видит как unpacked: `manifest.json`, `background.js`, bundled `content.js`, `inject.js` (MAIN world, не бандлится), `content.css`, иконки.

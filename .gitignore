@@ -7,3 +7,11 @@ dist/
 !.env.example
 .vscode/
 .idea/
+
+# Personal Claude Code context — never push.
+# These files (3-doc system: entry, contract, project memory) carry the
+# user's email, work-history, and references to private projects. They
+# stay local for Claude's session context only.
+CLAUDE.md
+instructions.md
+memory.md
