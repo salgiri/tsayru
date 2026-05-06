@@ -19,7 +19,7 @@ const flash = (msg) => {
 
 // Surface persist quota / I/O errors from core.js (avoids import cycle).
 window.addEventListener("tsayru-persist-error", (e) => {
-  flash(e?.detail?.message || "ошибка сохранения");
+  flash(e?.detail?.message || "save error");
 });
 
 const writeClipboard = async (text, okMsg) => {
@@ -28,21 +28,21 @@ const writeClipboard = async (text, okMsg) => {
     flash(okMsg);
   } catch (err) {
     console.warn("[tsayru] clipboard write failed:", err);
-    flash("ошибка копирования");
+    flash("clipboard error");
   }
 };
 
 const copyAll = async () => {
   const text = formatTasks();
   if (!text) {
-    flash("нечего копировать");
+    flash("nothing to copy");
     return;
   }
-  await writeClipboard(text, "скопировано");
+  await writeClipboard(text, "copied");
 };
 
 const copyOne = async (task, displayIndex) => {
-  await writeClipboard(formatTask(task, displayIndex), "задача скопирована");
+  await writeClipboard(formatTask(task, displayIndex), "task copied");
 };
 
 const SERVER_URL = "http://127.0.0.1:7777/tasks";
@@ -73,7 +73,7 @@ const postBatch = (tasks, target) =>
               error:
                 resp?.error ||
                 chrome.runtime.lastError?.message ||
-                "нет ответа",
+                "no response",
             });
             return;
           }
@@ -97,7 +97,7 @@ const pushToWebChat = (tabId, content) =>
               error:
                 resp?.error ||
                 chrome.runtime.lastError?.message ||
-                "нет ответа",
+                "no response",
             });
             return;
           }
@@ -112,7 +112,7 @@ const pushToWebChat = (tabId, content) =>
 // Push to a selected web-chat tab. The picker only ever returns "online" targets
 // now, so there's no local/clipboard branch.
 const sendBatch = async (tasks, target) => {
-  const label = target?.title || "web-чат";
+  const label = target?.title || "web chat";
   const where = ` → ${label}`;
 
   // Persist to inbox in background — audit trail, useful if user later wants
@@ -125,16 +125,16 @@ const sendBatch = async (tasks, target) => {
   const fullMd = formatTasks({ includeScreenshots: true });
   const inject = await pushToWebChat(target.tabId, fullMd);
   if (inject.ok) {
-    flash(`отправлено${where} ✓`);
+    flash(`sent${where} ✓`);
     return;
   }
   console.warn("[tsayru] inject failed:", inject.error);
   if (isContextInvalidated(inject.error)) {
-    flash("обнови страницу (Cmd+R)");
+    flash("reload page (Cmd+R)");
   } else if (/chat input not found/i.test(String(inject.error))) {
-    flash(`инжект не удался: на вкладке нет чат-инпута`);
+    flash(`inject failed: no chat input on this tab`);
   } else {
-    flash(`инжект не удался${where}`);
+    flash(`inject failed${where}`);
   }
 };
 
@@ -143,7 +143,7 @@ const sendToServer = async () => {
     ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost)
     : state.tasks;
   if (tasks.length === 0) {
-    flash("нечего отправлять");
+    flash("nothing to send");
     return;
   }
   const target = await pickTargetChat();
@@ -179,8 +179,8 @@ const clearTasks = () => {
     : state.tasks;
   if (target.length === 0) return;
   const msg = fh
-    ? `Очистить ${target.length} задач для ${fh}?`
-    : "Очистить все задачи?";
+    ? `Clear ${target.length} task${plural(target.length)} for ${fh}?`
+    : "Clear all tasks?";
   if (!confirm(msg)) return;
   if (fh) {
     state.tasks = state.tasks.filter((t) => safeHost(t.url) !== fh);
@@ -238,7 +238,7 @@ const renderTask = (task, idx, displayNum) => {
           "button",
           {
             class: "tsayru-task-save",
-            title: "Сохранить (Enter)",
+            title: "Save (Enter)",
             onClick: save,
           },
           "✓",
@@ -247,7 +247,7 @@ const renderTask = (task, idx, displayNum) => {
           "button",
           {
             class: "tsayru-task-cancel",
-            title: "Отмена (Esc)",
+            title: "Cancel (Esc)",
             onClick: cancel,
           },
           "↩",
@@ -274,7 +274,7 @@ const renderTask = (task, idx, displayNum) => {
         "button",
         {
           class: "tsayru-task-copy",
-          title: "Скопировать эту задачу",
+          title: "Copy this task",
           onClick: () => copyOne(task, displayNum),
         },
         "⧉",
@@ -283,7 +283,7 @@ const renderTask = (task, idx, displayNum) => {
         "button",
         {
           class: "tsayru-task-edit",
-          title: "Редактировать",
+          title: "Edit",
           onClick: () => {
             state.editingTaskIndex = idx;
             renderSidebar();
@@ -295,7 +295,7 @@ const renderTask = (task, idx, displayNum) => {
         "button",
         {
           class: "tsayru-task-del",
-          title: "Удалить",
+          title: "Delete",
           onClick: () => {
             state.tasks.splice(idx, 1);
             if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
@@ -347,7 +347,7 @@ export const renderSidebar = () => {
         `${label} · ${count}`,
       );
     };
-    tabs.appendChild(mkTab("Все", null, state.tasks.length));
+    tabs.appendChild(mkTab("All", null, state.tasks.length));
     for (const h of hosts) {
       const n = state.tasks.filter((t) => safeHost(t.url) === h).length;
       tabs.appendChild(mkTab(h, h, n));
@@ -365,8 +365,8 @@ export const renderSidebar = () => {
         "div",
         { class: "tsayru-empty" },
         state.filterHost
-          ? `Нет задач для ${state.filterHost}.`
-          : "Включи инспектор и кликни по блоку, чтобы добавить задачу.",
+          ? `No tasks for ${state.filterHost}.`
+          : "Enable the inspector and click an element to add a task.",
       ),
     );
   } else {
@@ -380,14 +380,14 @@ export const renderSidebar = () => {
 
   const counter = refs.sidebar.querySelector(".tsayru-counter");
   counter.textContent = state.tasks.length
-    ? `${state.tasks.length} задач${plural(state.tasks.length)}`
-    : "пусто";
+    ? `${state.tasks.length} task${plural(state.tasks.length)}`
+    : "empty";
 
   const inspectBtn = refs.sidebar.querySelector(".tsayru-inspect-btn");
   inspectBtn.classList.toggle("tsayru-active", state.inspecting);
   inspectBtn.textContent = state.inspecting
-    ? "Выключить инспектор"
-    : "Включить инспектор";
+    ? "Disable inspector"
+    : "Enable inspector";
 };
 
 export const ensureSidebar = () => {
@@ -399,12 +399,12 @@ export const ensureSidebar = () => {
       "div",
       { class: "tsayru-header" },
       el("div", { class: "tsayru-title" }, "tsayru"),
-      el("div", { class: "tsayru-counter" }, "пусто"),
+      el("div", { class: "tsayru-counter" }, "empty"),
       el(
         "button",
         {
           class: "tsayru-close",
-          title: "Скрыть (выключит инспектор)",
+          title: "Hide (turns inspector off)",
           onClick: () => hideSidebar(),
         },
         "—",
@@ -419,27 +419,27 @@ export const ensureSidebar = () => {
           class: "tsayru-inspect-btn",
           onClick: () => toggleInspector(),
         },
-        "Включить инспектор",
+        "Enable inspector",
       ),
       el(
         "button",
         { class: "tsayru-copy-btn", onClick: copyAll },
-        "Скопировать всё",
+        "Copy all",
       ),
       el(
         "button",
         {
           class: "tsayru-send-btn",
           title:
-            "Отправить пачку в открытую вкладку claude.ai / claude.com (auto-submit)",
+            "Send batch to an open claude.ai / claude.com tab (auto-submit)",
           onClick: sendToServer,
         },
-        "В Claude.ai",
+        "To Claude",
       ),
       el(
         "button",
         { class: "tsayru-clear-btn", onClick: clearTasks },
-        "Очистить",
+        "Clear",
       ),
     ),
     el("div", { class: "tsayru-list" }),

@@ -35,13 +35,7 @@
       return null;
     }
   };
-  var plural = (n) => {
-    const mod10 = n % 10;
-    const mod100 = n % 100;
-    if (mod10 === 1 && mod100 !== 11) return "\u0430";
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "\u0438";
-    return "";
-  };
+  var plural = (n, singular = "", many = "s") => n === 1 ? singular : many;
   var isDevHost = () => {
     const h = location.hostname;
     if (!h) return location.protocol === "file:";
@@ -57,7 +51,9 @@
       console.warn("[tsayru] persist failed:", msg);
       window.dispatchEvent(
         new CustomEvent("tsayru-persist-error", {
-          detail: { message: quota ? "\u043D\u0435\u0442 \u043C\u0435\u0441\u0442\u0430 \u2014 \u0443\u0434\u0430\u043B\u0438 \u0441\u0442\u0430\u0440\u044B\u0435 \u0437\u0430\u0434\u0430\u0447\u0438" : "\u043E\u0448\u0438\u0431\u043A\u0430 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F" }
+          detail: {
+            message: quota ? "out of storage \u2014 delete old tasks" : "save error"
+          }
         })
       );
       return false;
@@ -247,30 +243,30 @@
   };
   var taskLines = (t, displayIndex, opts = {}) => {
     const lines = [`## ${displayIndex}. ${t.label}`];
-    lines.push(`- \u0441\u0435\u043B\u0435\u043A\u0442\u043E\u0440: \`${t.selector}\``);
+    lines.push(`- selector: \`${t.selector}\``);
     const fw = t.framework;
     if (fw && fw.componentName) {
-      lines.push(`- \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442: \`${fw.componentName}\``);
+      lines.push(`- component: \`${fw.componentName}\``);
     }
     if (fw && fw.source && fw.source.file) {
       const loc = fw.source.line ? `${fw.source.file}:${fw.source.line}` : fw.source.file;
-      lines.push(`- \u0444\u0430\u0439\u043B: \`${loc}\``);
+      lines.push(`- file: \`${loc}\``);
     }
     if (fw && fw.framework && !fw.componentName && !fw.source) {
-      lines.push(`- \u0444\u0440\u0435\u0439\u043C\u0432\u043E\u0440\u043A: ${fw.framework}`);
+      lines.push(`- framework: ${fw.framework}`);
     }
     const styles = formatComputedStyles(t.computedStyles);
     if (styles) {
-      lines.push(`- \u0441\u0442\u0438\u043B\u0438: ${styles}`);
+      lines.push(`- styles: ${styles}`);
     }
     lines.push(`- url: ${t.url}`);
     if (t.screenshot) {
       if (opts.includeScreenshots) {
-        lines.push(`- \u0441\u043A\u0440\u0438\u043D\u0448\u043E\u0442:`);
+        lines.push(`- screenshot:`);
         lines.push("");
         lines.push(`![${t.label}](${t.screenshot})`);
       } else {
-        lines.push(`- \u0441\u043A\u0440\u0438\u043D\u0448\u043E\u0442: \u2713 (\u043F\u043E\u043B\u0443\u0447\u0438 \u0447\u0435\u0440\u0435\u0437 MCP \`tsayru_latest_tasks\`)`);
+        lines.push(`- screenshot: \u2713 (fetch via MCP tool \`tsayru_latest_tasks\`)`);
       }
     }
     lines.push("");
@@ -279,7 +275,7 @@
   };
   var formatTask = (t, displayIndex, opts = {}) => {
     return [
-      "# UI-\u0437\u0430\u0434\u0430\u0447\u0430 (tsayru)",
+      "# UI task (tsayru)",
       "",
       ...taskLines(t, displayIndex, opts)
     ].join("\n");
@@ -287,7 +283,7 @@
   var formatTasks = (opts = {}) => {
     const tasks = state.filterHost ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost) : state.tasks;
     if (tasks.length === 0) return "";
-    const header = state.filterHost ? `# UI-\u0437\u0430\u0434\u0430\u0447\u0438 (tsayru) \u2014 ${state.filterHost}` : "# UI-\u0437\u0430\u0434\u0430\u0447\u0438 (tsayru)";
+    const header = state.filterHost ? `# UI tasks (tsayru) \u2014 ${state.filterHost}` : "# UI tasks (tsayru)";
     const lines = [header, ""];
     tasks.forEach((t, i) => {
       lines.push(...taskLines(t, i + 1, opts));
@@ -304,7 +300,7 @@
         if (chrome.runtime.lastError || !resp || !resp.ok) {
           resolve({
             ok: false,
-            error: resp?.error || chrome.runtime.lastError?.message || "\u043D\u0435\u0442 \u043E\u0442\u0432\u0435\u0442\u0430"
+            error: resp?.error || chrome.runtime.lastError?.message || "no response"
           });
           return;
         }
@@ -342,9 +338,9 @@
         el(
           "span",
           { class: "tsayru-picker-item-label" },
-          entry.title || "\u0411\u0435\u0437 \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043A\u0430"
+          entry.title || "Untitled"
         ),
-        entry.active ? el("span", { class: "tsayru-picker-item-meta" }, "\u0430\u043A\u0442\u0438\u0432\u043D\u0430\u044F") : null
+        entry.active ? el("span", { class: "tsayru-picker-item-meta" }, "active") : null
       ),
       el("div", { class: "tsayru-picker-item-path" }, urlLabel)
     );
@@ -369,7 +365,7 @@
     const status = el(
       "div",
       { class: "tsayru-picker-status" },
-      "\u0418\u0449\u0443 \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0435 web-\u0447\u0430\u0442\u044B Claude\u2026"
+      "Looking for open Claude web chats\u2026"
     );
     pickerEl = el(
       "div",
@@ -388,7 +384,7 @@
           el(
             "div",
             { class: "tsayru-modal-title" },
-            "\u0412 \u043A\u0430\u043A\u043E\u0439 web-\u0447\u0430\u0442 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C?"
+            "Send to which web chat?"
           ),
           el(
             "button",
@@ -407,7 +403,7 @@
               class: "tsayru-modal-cancel",
               onClick: () => finish(null)
             },
-            "\u041E\u0442\u043C\u0435\u043D\u0430"
+            "Cancel"
           )
         )
       )
@@ -419,16 +415,16 @@
       list.innerHTML = "";
       if (!res.ok) {
         if (isContextInvalidated(res.error)) {
-          status.innerHTML = "\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043D\u0438\u0435 \u0431\u044B\u043B\u043E \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043D\u043E \u2014 \u043E\u0431\u043D\u043E\u0432\u0438 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 (<kbd>Cmd+R</kbd> / <kbd>F5</kbd>).";
+          status.innerHTML = "Extension was reloaded \u2014 refresh the page (<kbd>Cmd+R</kbd> / <kbd>F5</kbd>).";
           status.classList.add("tsayru-picker-status--warn");
         } else {
-          status.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${res.error}`;
+          status.textContent = `Error: ${res.error}`;
         }
         return;
       }
       const tabs = res.tabs;
       if (tabs.length === 0) {
-        status.innerHTML = '\u041D\u0435\u0442 \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0445 \u0432\u043A\u043B\u0430\u0434\u043E\u043A claude.ai \u0438\u043B\u0438 claude.com. \u041E\u0442\u043A\u0440\u043E\u0439 <a class="tsayru-picker-link" href="https://claude.ai/new" target="_blank">claude.ai/new</a> \u0438\u043B\u0438 <a class="tsayru-picker-link" href="https://claude.com" target="_blank">claude.com</a> \u0432 \u043D\u043E\u0432\u043E\u0439 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \u0438 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0443\u0441\u0442\u0438 picker.';
+        status.innerHTML = 'No open claude.ai or claude.com tabs. Open <a class="tsayru-picker-link" href="https://claude.ai/new" target="_blank">claude.ai/new</a> or <a class="tsayru-picker-link" href="https://claude.com" target="_blank">claude.com</a> in a new tab and reopen the picker.';
         for (const a of status.querySelectorAll("a")) {
           a.addEventListener("click", (e) => {
             e.preventDefault();
@@ -444,7 +440,7 @@
         }
         return;
       }
-      status.textContent = `\u041D\u0430\u0439\u0434\u0435\u043D\u043E ${tabs.length} web-\u0447\u0430\u0442${tabs.length === 1 ? "" : "\u043E\u0432"}:`;
+      status.textContent = `Found ${tabs.length} web chat${tabs.length === 1 ? "" : "s"}:`;
       for (const t of tabs) {
         const entry = {
           kind: "online",
@@ -466,7 +462,7 @@
     setTimeout(() => tip.remove(), 1400);
   };
   window.addEventListener("tsayru-persist-error", (e) => {
-    flash(e?.detail?.message || "\u043E\u0448\u0438\u0431\u043A\u0430 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F");
+    flash(e?.detail?.message || "save error");
   });
   var writeClipboard = async (text, okMsg) => {
     try {
@@ -474,19 +470,19 @@
       flash(okMsg);
     } catch (err) {
       console.warn("[tsayru] clipboard write failed:", err);
-      flash("\u043E\u0448\u0438\u0431\u043A\u0430 \u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F");
+      flash("clipboard error");
     }
   };
   var copyAll = async () => {
     const text = formatTasks();
     if (!text) {
-      flash("\u043D\u0435\u0447\u0435\u0433\u043E \u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C");
+      flash("nothing to copy");
       return;
     }
-    await writeClipboard(text, "\u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E");
+    await writeClipboard(text, "copied");
   };
   var copyOne = async (task, displayIndex) => {
-    await writeClipboard(formatTask(task, displayIndex), "\u0437\u0430\u0434\u0430\u0447\u0430 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u0430");
+    await writeClipboard(formatTask(task, displayIndex), "task copied");
   };
   var SERVER_URL = "http://127.0.0.1:7777/tasks";
   var isContextInvalidated2 = (err) => /context invalidated|Extension context/i.test(String(err || ""));
@@ -506,7 +502,7 @@
           if (chrome.runtime.lastError || !resp || !resp.ok) {
             resolve({
               ok: false,
-              error: resp?.error || chrome.runtime.lastError?.message || "\u043D\u0435\u0442 \u043E\u0442\u0432\u0435\u0442\u0430"
+              error: resp?.error || chrome.runtime.lastError?.message || "no response"
             });
             return;
           }
@@ -525,7 +521,7 @@
           if (chrome.runtime.lastError || !resp || !resp.ok) {
             resolve({
               ok: false,
-              error: resp?.error || chrome.runtime.lastError?.message || "\u043D\u0435\u0442 \u043E\u0442\u0432\u0435\u0442\u0430"
+              error: resp?.error || chrome.runtime.lastError?.message || "no response"
             });
             return;
           }
@@ -537,7 +533,7 @@
     }
   });
   var sendBatch = async (tasks, target) => {
-    const label = target?.title || "web-\u0447\u0430\u0442";
+    const label = target?.title || "web chat";
     const where = ` \u2192 ${label}`;
     postBatch(tasks, target).then((p) => {
       if (!p.ok) console.warn("[tsayru] inbox save failed:", p.error);
@@ -545,22 +541,22 @@
     const fullMd = formatTasks({ includeScreenshots: true });
     const inject = await pushToWebChat(target.tabId, fullMd);
     if (inject.ok) {
-      flash(`\u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u043E${where} \u2713`);
+      flash(`sent${where} \u2713`);
       return;
     }
     console.warn("[tsayru] inject failed:", inject.error);
     if (isContextInvalidated2(inject.error)) {
-      flash("\u043E\u0431\u043D\u043E\u0432\u0438 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 (Cmd+R)");
+      flash("reload page (Cmd+R)");
     } else if (/chat input not found/i.test(String(inject.error))) {
-      flash(`\u0438\u043D\u0436\u0435\u043A\u0442 \u043D\u0435 \u0443\u0434\u0430\u043B\u0441\u044F: \u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \u043D\u0435\u0442 \u0447\u0430\u0442-\u0438\u043D\u043F\u0443\u0442\u0430`);
+      flash(`inject failed: no chat input on this tab`);
     } else {
-      flash(`\u0438\u043D\u0436\u0435\u043A\u0442 \u043D\u0435 \u0443\u0434\u0430\u043B\u0441\u044F${where}`);
+      flash(`inject failed${where}`);
     }
   };
   var sendToServer = async () => {
     const tasks = state.filterHost ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost) : state.tasks;
     if (tasks.length === 0) {
-      flash("\u043D\u0435\u0447\u0435\u0433\u043E \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0442\u044C");
+      flash("nothing to send");
       return;
     }
     const target = await pickTargetChat();
@@ -588,7 +584,7 @@
     const fh = state.filterHost;
     const target = fh ? state.tasks.filter((t) => safeHost(t.url) === fh) : state.tasks;
     if (target.length === 0) return;
-    const msg = fh ? `\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C ${target.length} \u0437\u0430\u0434\u0430\u0447 \u0434\u043B\u044F ${fh}?` : "\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C \u0432\u0441\u0435 \u0437\u0430\u0434\u0430\u0447\u0438?";
+    const msg = fh ? `Clear ${target.length} task${plural(target.length)} for ${fh}?` : "Clear all tasks?";
     if (!confirm(msg)) return;
     if (fh) {
       state.tasks = state.tasks.filter((t) => safeHost(t.url) !== fh);
@@ -643,7 +639,7 @@
             "button",
             {
               class: "tsayru-task-save",
-              title: "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C (Enter)",
+              title: "Save (Enter)",
               onClick: save
             },
             "\u2713"
@@ -652,7 +648,7 @@
             "button",
             {
               class: "tsayru-task-cancel",
-              title: "\u041E\u0442\u043C\u0435\u043D\u0430 (Esc)",
+              title: "Cancel (Esc)",
               onClick: cancel
             },
             "\u21A9"
@@ -678,7 +674,7 @@
           "button",
           {
             class: "tsayru-task-copy",
-            title: "\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u044D\u0442\u0443 \u0437\u0430\u0434\u0430\u0447\u0443",
+            title: "Copy this task",
             onClick: () => copyOne(task, displayNum)
           },
           "\u29C9"
@@ -687,7 +683,7 @@
           "button",
           {
             class: "tsayru-task-edit",
-            title: "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C",
+            title: "Edit",
             onClick: () => {
               state.editingTaskIndex = idx;
               renderSidebar();
@@ -699,7 +695,7 @@
           "button",
           {
             class: "tsayru-task-del",
-            title: "\u0423\u0434\u0430\u043B\u0438\u0442\u044C",
+            title: "Delete",
             onClick: () => {
               state.tasks.splice(idx, 1);
               if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
@@ -743,7 +739,7 @@
           `${label} \xB7 ${count}`
         );
       };
-      tabs.appendChild(mkTab("\u0412\u0441\u0435", null, state.tasks.length));
+      tabs.appendChild(mkTab("All", null, state.tasks.length));
       for (const h of hosts) {
         const n = state.tasks.filter((t) => safeHost(t.url) === h).length;
         tabs.appendChild(mkTab(h, h, n));
@@ -756,7 +752,7 @@
         el(
           "div",
           { class: "tsayru-empty" },
-          state.filterHost ? `\u041D\u0435\u0442 \u0437\u0430\u0434\u0430\u0447 \u0434\u043B\u044F ${state.filterHost}.` : "\u0412\u043A\u043B\u044E\u0447\u0438 \u0438\u043D\u0441\u043F\u0435\u043A\u0442\u043E\u0440 \u0438 \u043A\u043B\u0438\u043A\u043D\u0438 \u043F\u043E \u0431\u043B\u043E\u043A\u0443, \u0447\u0442\u043E\u0431\u044B \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0437\u0430\u0434\u0430\u0447\u0443."
+          state.filterHost ? `No tasks for ${state.filterHost}.` : "Enable the inspector and click an element to add a task."
         )
       );
     } else {
@@ -766,10 +762,10 @@
       });
     }
     const counter = refs.sidebar.querySelector(".tsayru-counter");
-    counter.textContent = state.tasks.length ? `${state.tasks.length} \u0437\u0430\u0434\u0430\u0447${plural(state.tasks.length)}` : "\u043F\u0443\u0441\u0442\u043E";
+    counter.textContent = state.tasks.length ? `${state.tasks.length} task${plural(state.tasks.length)}` : "empty";
     const inspectBtn = refs.sidebar.querySelector(".tsayru-inspect-btn");
     inspectBtn.classList.toggle("tsayru-active", state.inspecting);
-    inspectBtn.textContent = state.inspecting ? "\u0412\u044B\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0438\u043D\u0441\u043F\u0435\u043A\u0442\u043E\u0440" : "\u0412\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0438\u043D\u0441\u043F\u0435\u043A\u0442\u043E\u0440";
+    inspectBtn.textContent = state.inspecting ? "Disable inspector" : "Enable inspector";
   };
   var ensureSidebar = () => {
     if (refs.sidebar) return;
@@ -780,12 +776,12 @@
         "div",
         { class: "tsayru-header" },
         el("div", { class: "tsayru-title" }, "tsayru"),
-        el("div", { class: "tsayru-counter" }, "\u043F\u0443\u0441\u0442\u043E"),
+        el("div", { class: "tsayru-counter" }, "empty"),
         el(
           "button",
           {
             class: "tsayru-close",
-            title: "\u0421\u043A\u0440\u044B\u0442\u044C (\u0432\u044B\u043A\u043B\u044E\u0447\u0438\u0442 \u0438\u043D\u0441\u043F\u0435\u043A\u0442\u043E\u0440)",
+            title: "Hide (turns inspector off)",
             onClick: () => hideSidebar()
           },
           "\u2014"
@@ -800,26 +796,26 @@
             class: "tsayru-inspect-btn",
             onClick: () => toggleInspector()
           },
-          "\u0412\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0438\u043D\u0441\u043F\u0435\u043A\u0442\u043E\u0440"
+          "Enable inspector"
         ),
         el(
           "button",
           { class: "tsayru-copy-btn", onClick: copyAll },
-          "\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0432\u0441\u0451"
+          "Copy all"
         ),
         el(
           "button",
           {
             class: "tsayru-send-btn",
-            title: "\u041E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u044C \u043F\u0430\u0447\u043A\u0443 \u0432 \u043E\u0442\u043A\u0440\u044B\u0442\u0443\u044E \u0432\u043A\u043B\u0430\u0434\u043A\u0443 claude.ai / claude.com (auto-submit)",
+            title: "Send batch to an open claude.ai / claude.com tab (auto-submit)",
             onClick: sendToServer
           },
-          "\u0412 Claude.ai"
+          "To Claude"
         ),
         el(
           "button",
           { class: "tsayru-clear-btn", onClick: clearTasks },
-          "\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C"
+          "Clear"
         )
       ),
       el("div", { class: "tsayru-list" })
@@ -970,7 +966,7 @@
         el(
           "div",
           { class: "tsayru-modal-head" },
-          el("div", { class: "tsayru-modal-title" }, "\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043B\u044F \u0431\u043B\u043E\u043A\u0430"),
+          el("div", { class: "tsayru-modal-title" }, "Task for this element"),
           el(
             "button",
             { class: "tsayru-modal-close", onClick: closeModal },
@@ -986,7 +982,7 @@
         ),
         el("textarea", {
           class: "tsayru-modal-input",
-          placeholder: "\u0427\u0442\u043E \u043F\u043E\u043C\u0435\u043D\u044F\u0442\u044C \u0432 \u044D\u0442\u043E\u043C \u0431\u043B\u043E\u043A\u0435? (Enter \u2014 \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C, Shift+Enter \u2014 \u043F\u0435\u0440\u0435\u043D\u043E\u0441)",
+          placeholder: "What should change here? (Enter to add, Shift+Enter for newline)",
           rows: 4
         }),
         el(
@@ -995,7 +991,7 @@
           el(
             "button",
             { class: "tsayru-modal-cancel", onClick: closeModal },
-            "\u041E\u0442\u043C\u0435\u043D\u0430"
+            "Cancel"
           ),
           el(
             "button",
@@ -1003,7 +999,7 @@
               class: "tsayru-modal-submit",
               onClick: () => submitTask(selector, label, frameworkPromise, computedStyles, screenshot)
             },
-            "\u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C (Enter)"
+            "Add (Enter)"
           )
         )
       )

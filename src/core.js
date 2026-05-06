@@ -42,13 +42,9 @@ export const safeHost = (url) => {
   }
 };
 
-export const plural = (n) => {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return "а";
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "и";
-  return "";
-};
+// Pluralizer: returns the plural form for `n`. Defaults are English (s).
+export const plural = (n, singular = "", many = "s") =>
+  n === 1 ? singular : many;
 
 export const isDevHost = () => {
   const h = location.hostname;
@@ -78,7 +74,11 @@ export const persist = async () => {
     console.warn("[tsayru] persist failed:", msg);
     window.dispatchEvent(
       new CustomEvent("tsayru-persist-error", {
-        detail: { message: quota ? "нет места — удали старые задачи" : "ошибка сохранения" },
+        detail: {
+          message: quota
+            ? "out of storage — delete old tasks"
+            : "save error",
+        },
       }),
     );
     return false;

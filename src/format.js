@@ -54,32 +54,32 @@ const formatComputedStyles = (cs) => {
 // stays light, server route delivers the heavy version via MCP.
 const taskLines = (t, displayIndex, opts = {}) => {
   const lines = [`## ${displayIndex}. ${t.label}`];
-  lines.push(`- селектор: \`${t.selector}\``);
+  lines.push(`- selector: \`${t.selector}\``);
   const fw = t.framework;
   if (fw && fw.componentName) {
-    lines.push(`- компонент: \`${fw.componentName}\``);
+    lines.push(`- component: \`${fw.componentName}\``);
   }
   if (fw && fw.source && fw.source.file) {
     const loc = fw.source.line
       ? `${fw.source.file}:${fw.source.line}`
       : fw.source.file;
-    lines.push(`- файл: \`${loc}\``);
+    lines.push(`- file: \`${loc}\``);
   }
   if (fw && fw.framework && !fw.componentName && !fw.source) {
-    lines.push(`- фреймворк: ${fw.framework}`);
+    lines.push(`- framework: ${fw.framework}`);
   }
   const styles = formatComputedStyles(t.computedStyles);
   if (styles) {
-    lines.push(`- стили: ${styles}`);
+    lines.push(`- styles: ${styles}`);
   }
   lines.push(`- url: ${t.url}`);
   if (t.screenshot) {
     if (opts.includeScreenshots) {
-      lines.push(`- скриншот:`);
+      lines.push(`- screenshot:`);
       lines.push("");
       lines.push(`![${t.label}](${t.screenshot})`);
     } else {
-      lines.push(`- скриншот: ✓ (получи через MCP \`tsayru_latest_tasks\`)`);
+      lines.push(`- screenshot: ✓ (fetch via MCP tool \`tsayru_latest_tasks\`)`);
     }
   }
   lines.push("");
@@ -91,7 +91,7 @@ const taskLines = (t, displayIndex, opts = {}) => {
 // Used by the per-task copy button. Includes header so Claude has context.
 export const formatTask = (t, displayIndex, opts = {}) => {
   return [
-    "# UI-задача (tsayru)",
+    "# UI task (tsayru)",
     "",
     ...taskLines(t, displayIndex, opts),
   ].join("\n");
@@ -103,8 +103,8 @@ export const formatTasks = (opts = {}) => {
     : state.tasks;
   if (tasks.length === 0) return "";
   const header = state.filterHost
-    ? `# UI-задачи (tsayru) — ${state.filterHost}`
-    : "# UI-задачи (tsayru)";
+    ? `# UI tasks (tsayru) — ${state.filterHost}`
+    : "# UI tasks (tsayru)";
   const lines = [header, ""];
   tasks.forEach((t, i) => {
     lines.push(...taskLines(t, i + 1, opts));

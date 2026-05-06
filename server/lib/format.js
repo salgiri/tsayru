@@ -58,23 +58,23 @@ const formatComputedStyles = (cs) => {
 // `displayIndex` is 1-based — what shows up in `## N. <label>`.
 const taskLines = (t, displayIndex) => {
   const lines = [`## ${displayIndex}. ${t.label}`];
-  lines.push(`- селектор: \`${t.selector}\``);
+  lines.push(`- selector: \`${t.selector}\``);
   const fw = t.framework;
   if (fw && fw.componentName) {
-    lines.push(`- компонент: \`${fw.componentName}\``);
+    lines.push(`- component: \`${fw.componentName}\``);
   }
   if (fw && fw.source && fw.source.file) {
     const loc = fw.source.line
       ? `${fw.source.file}:${fw.source.line}`
       : fw.source.file;
-    lines.push(`- файл: \`${loc}\``);
+    lines.push(`- file: \`${loc}\``);
   }
   if (fw && fw.framework && !fw.componentName && !fw.source) {
-    lines.push(`- фреймворк: ${fw.framework}`);
+    lines.push(`- framework: ${fw.framework}`);
   }
   const styles = formatComputedStyles(t.computedStyles);
   if (styles) {
-    lines.push(`- стили: ${styles}`);
+    lines.push(`- styles: ${styles}`);
   }
   lines.push(`- url: ${t.url}`);
   lines.push("");
@@ -95,8 +95,8 @@ export const formatTasks = (tasks, filterHost) => {
     : tasks || [];
   if (list.length === 0) return "";
   const header = filterHost
-    ? `# UI-задачи (tsayru) — ${filterHost}`
-    : "# UI-задачи (tsayru)";
+    ? `# UI tasks (tsayru) — ${filterHost}`
+    : "# UI tasks (tsayru)";
   const lines = [header, ""];
   list.forEach((t, i) => {
     lines.push(...taskLines(t, i + 1));

@@ -3,7 +3,7 @@
 //
 // We deliberately do NOT show local Claude Code (VS Code / terminal) chats:
 // those don't have a public push API, so the resulting "click → Cmd+V"
-// flow is no better than just hitting "Скопировать всё" from the sidebar.
+// flow is no better than just hitting "Copy all" from the sidebar.
 //
 // Returns Promise<null | OnlineTab>:
 //   null      — cancelled
@@ -25,7 +25,7 @@ const fetchOnlineTabs = () =>
             error:
               resp?.error ||
               chrome.runtime.lastError?.message ||
-              "нет ответа",
+              "no response",
           });
           return;
         }
@@ -74,10 +74,10 @@ const renderItem = (entry, onPick) => {
       el(
         "span",
         { class: "tsayru-picker-item-label" },
-        entry.title || "Без заголовка",
+        entry.title || "Untitled",
       ),
       entry.active
-        ? el("span", { class: "tsayru-picker-item-meta" }, "активная")
+        ? el("span", { class: "tsayru-picker-item-meta" }, "active")
         : null,
     ),
     el("div", { class: "tsayru-picker-item-path" }, urlLabel),
@@ -107,7 +107,7 @@ export const pickTargetChat = () =>
     const status = el(
       "div",
       { class: "tsayru-picker-status" },
-      "Ищу открытые web-чаты Claude…",
+      "Looking for open Claude web chats…",
     );
 
     pickerEl = el(
@@ -127,7 +127,7 @@ export const pickTargetChat = () =>
           el(
             "div",
             { class: "tsayru-modal-title" },
-            "В какой web-чат отправить?",
+            "Send to which web chat?",
           ),
           el(
             "button",
@@ -146,7 +146,7 @@ export const pickTargetChat = () =>
               class: "tsayru-modal-cancel",
               onClick: () => finish(null),
             },
-            "Отмена",
+            "Cancel",
           ),
         ),
       ),
@@ -161,20 +161,20 @@ export const pickTargetChat = () =>
       if (!res.ok) {
         if (isContextInvalidated(res.error)) {
           status.innerHTML =
-            "Расширение было перезагружено — обнови страницу " +
+            "Extension was reloaded — refresh the page " +
             "(<kbd>Cmd+R</kbd> / <kbd>F5</kbd>).";
           status.classList.add("tsayru-picker-status--warn");
         } else {
-          status.textContent = `Ошибка: ${res.error}`;
+          status.textContent = `Error: ${res.error}`;
         }
         return;
       }
       const tabs = res.tabs;
       if (tabs.length === 0) {
         status.innerHTML =
-          "Нет открытых вкладок claude.ai или claude.com. " +
-          "Открой <a class=\"tsayru-picker-link\" href=\"https://claude.ai/new\" target=\"_blank\">claude.ai/new</a> " +
-          "или <a class=\"tsayru-picker-link\" href=\"https://claude.com\" target=\"_blank\">claude.com</a> в новой вкладке и перезапусти picker.";
+          "No open claude.ai or claude.com tabs. Open " +
+          "<a class=\"tsayru-picker-link\" href=\"https://claude.ai/new\" target=\"_blank\">claude.ai/new</a> " +
+          "or <a class=\"tsayru-picker-link\" href=\"https://claude.com\" target=\"_blank\">claude.com</a> in a new tab and reopen the picker.";
         // Wire the link opens via background to avoid CSP issues on the host page.
         for (const a of status.querySelectorAll("a")) {
           a.addEventListener("click", (e) => {
@@ -190,7 +190,7 @@ export const pickTargetChat = () =>
         }
         return;
       }
-      status.textContent = `Найдено ${tabs.length} web-чат${tabs.length === 1 ? "" : "ов"}:`;
+      status.textContent = `Found ${tabs.length} web chat${tabs.length === 1 ? "" : "s"}:`;
       for (const t of tabs) {
         const entry = {
           kind: "online",

@@ -71,7 +71,7 @@ export const openModal = (target, computedStyles, screenshot) => {
       el(
         "div",
         { class: "tsayru-modal-head" },
-        el("div", { class: "tsayru-modal-title" }, "Задача для блока"),
+        el("div", { class: "tsayru-modal-title" }, "Task for this element"),
         el(
           "button",
           { class: "tsayru-modal-close", onClick: closeModal },
@@ -90,7 +90,7 @@ export const openModal = (target, computedStyles, screenshot) => {
       el("textarea", {
         class: "tsayru-modal-input",
         placeholder:
-          "Что поменять в этом блоке? (Enter — добавить, Shift+Enter — перенос)",
+          "What should change here? (Enter to add, Shift+Enter for newline)",
         rows: 4,
       }),
       el(
@@ -99,7 +99,7 @@ export const openModal = (target, computedStyles, screenshot) => {
         el(
           "button",
           { class: "tsayru-modal-cancel", onClick: closeModal },
-          "Отмена",
+          "Cancel",
         ),
         el(
           "button",
@@ -108,7 +108,7 @@ export const openModal = (target, computedStyles, screenshot) => {
             onClick: () =>
               submitTask(selector, label, frameworkPromise, computedStyles, screenshot),
           },
-          "Добавить (Enter)",
+          "Add (Enter)",
         ),
       ),
     ),
