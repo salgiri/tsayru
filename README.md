@@ -20,11 +20,11 @@ When you're working with Claude on a frontend project, half the conversation is 
 
 | Feature | Detail |
 |---|---|
-| **Smart selectors** | `data-testid` / `id` / `aria-label` priority; falls back to verified-unique class chains. Won't silently point at the wrong element. |
-| **React fiber detection** | In dev mode (`React.createElement` keeps `_debugSource`), pulls `component: SaveButton` and `file: src/components/SaveButton.tsx:23`. |
+| **Smart selectors** | `data-testid` / `id` / `aria-label` priority; falls back to verified-unique class chains. Won't silently point at the wrong element. Pierces open shadow roots (`host >>> inner` notation). |
+| **React fiber detection** | In dev mode, pulls `component: SaveButton` and `file: src/components/SaveButton.tsx:23`. React ≤18 via `_debugSource`; React 19 via a `_debugStack` fallback (works with Vite-style dev servers that serve real `/src/...` module paths). Vue 2/3 supported too. |
 | **Computed styles** | One-line summary: `color #2d4a3e · bg #f4f1ea · font 14px Inter 600 · pad 10px · r 6px · 320×40`. |
-| **Element screenshots** | Cropped to the clicked element with 8px padding. UI hidden during capture so the extension's own chrome isn't in the shot. |
-| **Three delivery channels** | Clipboard (copy and paste anywhere) · Direct push to claude.ai / claude.com web tabs (no Cmd+V) · MCP server for any local Claude Code session. |
+| **Element screenshots** | Cropped to the clicked element with 8px padding, encoded as compact JPEG. UI hidden during capture so the extension's own chrome isn't in the shot. |
+| **Three delivery channels** | Clipboard (copy and paste anywhere) · Direct push to claude.ai / claude.com web tabs (text + screenshots attached as image files, auto-submit) · MCP server for any local Claude Code session. |
 | **Per-host filtering** | Tabs in the sidebar split tasks across the projects you're working on. |
 | **Inline editing** | Edit any task's text without losing the captured selector / screenshot. |
 | **Hover preview** | Hovering a task in the sidebar re-highlights the original element on the page. |
@@ -59,15 +59,15 @@ Then load it in Chrome (or any Chromium-based browser — Arc, Brave, Edge):
 
 **3. Click an element.** A small dialog opens. Type what should change (e.g., "make this button forest-green, not gray"), press **Enter**.
 
-**4. Repeat** for as many elements as you want. The sidebar fills up with tasks.
+**4. Repeat** for as many elements as you want — after each added task the inspector re-arms automatically, so a batch session is just click → type → Enter → click. The sidebar fills up with tasks. (Esc turns the crosshair off.)
 
 **5. Ship the batch** — choose one of three ways:
 
 | Button | What happens |
 |---|---|
-| **Copy all** | Markdown of every task lands on your clipboard. Paste into any chat, editor, or doc. Lightweight (no inline image data). |
+| **Copy all** | Markdown of every task lands on your clipboard. Paste into any chat, editor, or doc. Lightweight (no inline image data). The batch is also saved to the local inbox (if `tsayru-server` is running) so MCP can fetch the screenshots. |
 | **Copy single task** (the `⧉` icon on each row) | Same as above, but only that one task. |
-| **To Claude** | Picks an open `claude.ai` or `claude.com` tab, injects the markdown (with screenshots embedded), and presses Send. No keyboard step. |
+| **To Claude** | Picks an open `claude.ai` or `claude.com` tab, injects the markdown, attaches the screenshots as image files, and presses Send. No keyboard step. |
 
 You can also filter tasks by host (the tabs above the list), edit a task in place (`✎`), or clear them all at once.
 
@@ -89,6 +89,8 @@ npm start          # listens on http://127.0.0.1:7777
 ```
 
 The server only binds to `127.0.0.1` — never the public interface. Default port is `7777`; override with `TSAYRU_PORT=8123 node http.js`.
+
+On top of the loopback binding, the server rejects any request carrying a web `Origin` header — only the extension (`chrome-extension://…`) and originless local tools (curl, scripts) get through. Without this, any page open in your browser could read or wipe the inbox via `fetch("http://127.0.0.1:7777/…")`. The inbox also self-prunes to the most recent 200 batches.
 
 ### Wire up MCP for Claude Code
 
@@ -126,10 +128,10 @@ Now in any Claude Code chat, you can say *"check tsayru for new tasks"* and Clau
 │                                                   │
 │  ┌──────────────────────┐   ┌────────────────┐   │
 │  │  content.js          │   │  inject.js     │   │
-│  │  (ISOLATED world)    │←─→│  (MAIN world)  │   │
-│  │  · sidebar UI        │   │  · React fiber │   │
-│  │  · selector builder  │   │    extraction  │   │
-│  │  · modal + inspector │   │                │   │
+│  │  (ISOLATED world)    │←─→│  (MAIN world,  │   │
+│  │  · sidebar UI        │   │   lazy-injected│   │
+│  │  · selector builder  │   │   on demand)   │   │
+│  │  · modal + inspector │   │  · React fiber │   │
 │  └──────┬───────────────┘   └────────────────┘   │
 │         │ chrome.runtime                          │
 │         ▼ .sendMessage                            │
@@ -175,7 +177,7 @@ tsayru/
 │   ├── manifest.json    Manifest V3
 │   ├── background.js    service worker
 │   ├── content.js       BUNDLED OUTPUT (do not edit by hand)
-│   ├── inject.js        MAIN-world script for React fiber access
+│   ├── inject.js        MAIN-world fiber probe (lazy-injected on demand)
 │   ├── content.css      sidebar / modal / picker styles
 │   └── icons/           toolbar icons
 │
@@ -183,13 +185,13 @@ tsayru/
 │   ├── http.js          HTTP inbox server (Express, 127.0.0.1:7777)
 │   ├── mcp.js           MCP server (stdio transport)
 │   ├── lib/
-│   │   ├── chats.js     enumerates Claude Code sessions
-│   │   ├── format.js    markdown renderer (mirrors src/format.js)
-│   │   └── storage.js   ~/.tsayru/inbox/ CRUD
+│   │   ├── format.js    re-exports the shared renderer from src/format.js
+│   │   └── storage.js   ~/.tsayru/inbox/ CRUD + retention
 │   ├── package.json
 │   └── README.md
 │
-├── package.json         root build pipeline (esbuild)
+├── test/                vitest suites (selector, format, storage)
+├── package.json         root build pipeline (esbuild) + tests
 └── README.md            you are here
 ```
 
@@ -199,11 +201,12 @@ tsayru/
 
 ```bash
 npm run watch     # rebuild extension/content.js on every src/ change
+npm test          # vitest: selector builder, formatter, server storage
 ```
 
-After any source change: rebuild → reload the extension in `chrome://extensions` → reload pages where you want the new code.
+After any source change: rebuild → reload the extension in `chrome://extensions` → reload pages where you want the new code. CI fails if `extension/content.js` doesn't match `src/` — always commit the rebuilt bundle together with the source.
 
-The bundle is a single IIFE in `extension/content.js`. esbuild targets `chrome111` because the MAIN-world content-script feature is required for React fiber detection.
+The bundle is a single IIFE in `extension/content.js`. esbuild targets `chrome111` because the MAIN-world scripting feature is required for React fiber detection.
 
 ---
 
@@ -213,14 +216,14 @@ The extension requests the minimum permissions it needs:
 
 | Permission | Why |
 |---|---|
-| `activeTab` | Capture screenshots of the tab you're inspecting (only when you click the icon or press the hotkey). |
-| `scripting` | Inject markdown into a `claude.ai`/`claude.com` chat input when you pick that option. |
-| `storage` | Persist your task list across page reloads (`chrome.storage.local`). |
+| `activeTab` | Capture screenshots of the tab you're inspecting (only when you click the icon or press the hotkey). On non-localhost hosts where the sidebar auto-opens, click the toolbar icon once to grant screenshot access — the sidebar will tell you if it's missing. |
+| `scripting` | Inject markdown into a `claude.ai`/`claude.com` chat input when you pick that option, and lazily inject the framework-detection probe into pages where you use the inspector. |
+| `storage` + `unlimitedStorage` | Persist your task list across page reloads (`chrome.storage.local`); screenshots are bulky, so the 10 MB default quota is lifted. |
 | `clipboardWrite` | Copy markdown to your clipboard. |
 | `host_permissions` for `127.0.0.1` / `localhost` | Talk to your local `tsayru-server` (only if you run it). |
 | `host_permissions` for `claude.ai` / `claude.com` | Read open tabs and inject the chat markdown. |
 
-**No data leaves your machine** unless you explicitly send it to a Claude chat. The optional `tsayru-server` binds to `127.0.0.1` only.
+**No data leaves your machine** unless you explicitly send it to a Claude chat. The optional `tsayru-server` binds to `127.0.0.1` only **and** rejects requests from web origins — other pages in your browser can't read or wipe the inbox.
 
 ---
 

@@ -17,7 +17,7 @@ Both read and write `~/.tsayru/inbox/<batchId>/{tasks.json, tasks.md}`.
 ## Install
 
 ```bash
-cd /Users/mac/Documents/projects/tsayru/server
+cd /absolute/path/to/tsayru/server
 npm install
 ```
 
@@ -50,7 +50,15 @@ extension talks to it over loopback.
 | `DELETE` | `/tasks/:batchId` | Remove the batch folder. |
 | `GET` | `/health` | `{ ok: true, version }`. |
 
-CORS is permissive (`*`) — fine because the server is loopback-only.
+### Origin gate
+
+Loopback binding alone does not protect the inbox from the user's own
+browser — any open tab could `fetch("http://127.0.0.1:7777/…")`. So every
+request with an `Origin` header that is not `chrome-extension://…` gets a
+`403`. Originless requests (curl, local scripts) pass.
+
+Batches are validated (max 500 tasks, objects only) and the inbox self-prunes
+to the most recent 200 batches (`TSAYRU_MAX_BATCHES` to override).
 
 ## Wire MCP into Claude Code
 
@@ -63,7 +71,7 @@ to edit) under `mcpServers`:
   "mcpServers": {
     "tsayru": {
       "command": "node",
-      "args": ["/Users/mac/Documents/projects/tsayru/server/mcp.js"]
+      "args": ["/absolute/path/to/tsayru/server/mcp.js"]
     }
   }
 }
@@ -86,7 +94,7 @@ anything running manually for it to work — Claude Code handles the lifecycle.
 In one terminal, start the HTTP server:
 
 ```bash
-node /Users/mac/Documents/projects/tsayru/server/http.js
+node /absolute/path/to/tsayru/server/http.js
 ```
 
 In another, post a batch and verify storage:
@@ -120,7 +128,7 @@ curl -sS http://127.0.0.1:7777/tasks/list
 To verify the MCP server lists its tools, send a single JSON-RPC frame:
 
 ```bash
-node /Users/mac/Documents/projects/tsayru/server/mcp.js <<'EOF'
+node /absolute/path/to/tsayru/server/mcp.js <<'EOF'
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
@@ -134,18 +142,19 @@ In day-to-day use Claude Code drives that handshake automatically.
 ```
 server/
 ├── package.json
-├── http.js          # Express HTTP inbox, localhost-only
+├── http.js          # Express HTTP inbox, localhost-only, origin-gated
 ├── mcp.js           # MCP stdio server
 ├── lib/
-│   ├── storage.js   # ~/.tsayru/inbox CRUD shared by both entrypoints
-│   └── format.js    # port of /src/format.js — same Russian field labels
+│   ├── storage.js   # ~/.tsayru/inbox CRUD + retention, shared by both entrypoints
+│   └── format.js    # re-exports the shared renderer from /src/format.js
 └── README.md
 ```
 
 ## Notes
 
-- `batchId` is the ISO timestamp with `:` and `.` replaced by `-`, so folder
-  names sort lexicographically newest-last and listing is just a sort+reverse.
+- `batchId` is the ISO timestamp with `:` and `.` replaced by `-`, plus a
+  short random hex suffix (same-millisecond saves can't collide). Folder
+  names still sort lexicographically, so listing is just a sort+reverse.
 - `tasks.md` is rendered at write time (cheaper than re-rendering on every
   MCP read) and falls back to re-rendering from `tasks.json` if missing.
 - The HTTP body limit is 25 MB so a batch with a few PNG screenshots

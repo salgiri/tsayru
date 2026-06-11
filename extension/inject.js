@@ -34,6 +34,8 @@
   // Walk up the fiber tree to find the closest node with a `_debugSource`.
   // The host fiber for a plain JSX element (e.g. `<header>`) often lacks one;
   // the source lives on the owner / containing component fiber further up.
+  // NOTE: `_debugSource` exists only on React ≤18 dev builds with the babel
+  // source plugin — React 19 removed it. See the `_debugStack` fallback below.
   const reactDebugSource = (fiber) => {
     let node = fiber;
     let depth = 0;
@@ -45,13 +47,54 @@
     return null;
   };
 
+  // React 19 fallback: dev builds attach `_debugStack` (an Error captured at
+  // element creation). With dev servers that serve real module paths (Vite:
+  // http://localhost:5173/src/components/Foo.tsx?t=...), the first app frame
+  // gives us file:line:column. Bundler-served frames (bundle.js) are skipped —
+  // a misleading path is worse than none.
+  const parseDebugStack = (stack) => {
+    for (const ln of String(stack || "").split("\n")) {
+      const m = ln.match(
+        /(https?:\/\/[^\s()]+?\.(?:jsx|tsx|js|ts|mjs|vue|svelte))(?:\?[^\s():]*)?:(\d+):(\d+)/,
+      );
+      if (!m) continue;
+      try {
+        const p = new URL(m[1]).pathname;
+        if (p.includes("/node_modules/") || p.includes("/.vite/")) continue;
+        // Accept only frames that look like app source, not bundles.
+        if (!/\.(jsx|tsx|vue|svelte)$/.test(p) && !p.includes("/src/")) continue;
+        return {
+          fileName: p.replace(/^\//, ""),
+          lineNumber: Number(m[2]),
+          columnNumber: Number(m[3]),
+        };
+      } catch {}
+    }
+    return null;
+  };
+
+  const reactDebugStackSource = (fiber) => {
+    let node = fiber;
+    let depth = 0;
+    while (node && depth < 30) {
+      const st = node._debugStack;
+      if (st) {
+        const src = parseDebugStack(st.stack || st);
+        if (src) return src;
+      }
+      node = node._debugOwner || node.return;
+      depth++;
+    }
+    return null;
+  };
+
   const detect = (el) => {
     if (!el) return null;
 
     const fiberKey = reactFiberKey(el);
     if (fiberKey) {
       const fiber = el[fiberKey];
-      const ds = reactDebugSource(fiber);
+      const ds = reactDebugSource(fiber) || reactDebugStackSource(fiber);
       const componentName = reactComponentName(fiber);
       return {
         framework: "react",
@@ -96,7 +139,15 @@
     const { x, y, requestId } = data;
     let result = null;
     try {
-      const el = document.elementFromPoint(x, y);
+      // Pierce open shadow roots — mirrors the content script's deep hit-test
+      // so both sides agree on which element was clicked.
+      let el = document.elementFromPoint(x, y);
+      let guard = 12;
+      while (el && el.shadowRoot && guard-- > 0) {
+        const inner = el.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === el) break;
+        el = inner;
+      }
       result = detect(el);
     } catch (err) {
       result = null;

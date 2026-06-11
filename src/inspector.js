@@ -2,7 +2,8 @@
 // Sidebar visibility (show/hide/toggle) — kept here because hiding the panel must turn off inspector.
 
 import { el, state, refs } from "./core.js";
-import { snapshotComputedStyles } from "./framework.js";
+import { snapshotComputedStyles, ensureMainWorld } from "./framework.js";
+import { deepElementFromPoint } from "./selector.js";
 import { captureElement } from "./screenshot.js";
 import { ensureSidebar, renderSidebar } from "./sidebar.js";
 import { openModal } from "./modal.js";
@@ -34,6 +35,9 @@ export const setInspecting = (on) => {
   state.inspecting = on;
   document.documentElement.classList.toggle("tsayru-inspecting", on);
   if (!on) moveHighlight(null);
+  // Warm up the MAIN-world fiber probe so the first click's framework
+  // detection doesn't race the lazy injection.
+  if (on) ensureMainWorld();
   renderSidebar();
 };
 
@@ -79,7 +83,7 @@ const isOurChrome = (node) =>
 
 const onMouseMove = (e) => {
   if (!state.inspecting) return;
-  const target = document.elementFromPoint(e.clientX, e.clientY);
+  const target = deepElementFromPoint(e.clientX, e.clientY);
   if (!target || target === state.hovered) return;
   if (isOurChrome(target)) {
     state.hovered = null;
@@ -90,12 +94,23 @@ const onMouseMove = (e) => {
   moveHighlight(target);
 };
 
+// Suppress the page's own pointer reactions while inspecting — otherwise a
+// mousedown closes the very dropdown the user is trying to annotate before
+// the click handler ever sees it. (Canceling pointerdown/mousedown does not
+// cancel the subsequent `click`, so onClick below still fires.)
+const onPointerSuppress = (e) => {
+  if (!state.inspecting) return;
+  if (isOurChrome(e.target)) return;
+  e.preventDefault();
+  e.stopPropagation();
+};
+
 const onClick = async (e) => {
   if (!state.inspecting) return;
   if (e.target.closest(".tsayru-sidebar, .tsayru-modal-backdrop")) return;
   e.preventDefault();
   e.stopPropagation();
-  const target = document.elementFromPoint(e.clientX, e.clientY);
+  const target = deepElementFromPoint(e.clientX, e.clientY);
   if (!target) return;
   if (isOurChrome(target)) return;
   // Capture visual context BEFORE any DOM mutation (modal/highlight removal).
@@ -117,8 +132,15 @@ const onKeyDown = (e) => {
 
 export const initEventListeners = () => {
   document.addEventListener("mousemove", onMouseMove, true);
+  document.addEventListener("pointerdown", onPointerSuppress, true);
+  document.addEventListener("mousedown", onPointerSuppress, true);
+  document.addEventListener("mouseup", onPointerSuppress, true);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKeyDown, true);
+  // Modal dispatches this after a task is added — re-arm the inspector so a
+  // batch session is click → type → Enter → click, without re-enabling by hand.
+  // (CustomEvent instead of a direct import to avoid a modal↔inspector cycle.)
+  window.addEventListener("tsayru-task-added", () => setInspecting(true));
   window.addEventListener(
     "scroll",
     () => {

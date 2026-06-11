@@ -1,4 +1,103 @@
 (() => {
+  // src/format.js
+  var safeHost = (url) => {
+    try {
+      return new URL(url).host;
+    } catch {
+      return null;
+    }
+  };
+  var rgbToHex = (s) => {
+    const m = String(s).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/);
+    if (!m) return s;
+    const [, r, g, b, a] = m;
+    if (a !== void 0 && parseFloat(a) === 0) return "transparent";
+    const hex = (n) => Math.max(0, Math.min(255, parseInt(n, 10))).toString(16).padStart(2, "0");
+    const base = `#${hex(r)}${hex(g)}${hex(b)}`;
+    if (a !== void 0 && parseFloat(a) < 1) {
+      return `${base} (\u03B1 ${parseFloat(a).toFixed(2)})`;
+    }
+    return base;
+  };
+  var formatComputedStyles = (cs) => {
+    if (!cs) return null;
+    const parts = [];
+    const fg = rgbToHex(cs.color);
+    if (fg && fg !== "#000000") parts.push(`color ${fg}`);
+    const bg = rgbToHex(cs.backgroundColor);
+    if (bg && bg !== "transparent") parts.push(`bg ${bg}`);
+    const fontFam = (cs.fontFamily || "").split(",")[0].trim().replace(/['"]/g, "");
+    const fontParts = [];
+    if (cs.fontSize) fontParts.push(cs.fontSize);
+    if (fontFam) fontParts.push(fontFam);
+    if (cs.fontWeight && cs.fontWeight !== "400") fontParts.push(cs.fontWeight);
+    if (fontParts.length) parts.push(`font ${fontParts.join(" ")}`);
+    if (cs.padding && cs.padding !== "0px") parts.push(`pad ${cs.padding}`);
+    if (cs.borderRadius && cs.borderRadius !== "0px")
+      parts.push(`r ${cs.borderRadius}`);
+    if (cs.border && !/^0px/.test(cs.border) && !/none/.test(cs.border)) {
+      parts.push(`border ${cs.border}`);
+    }
+    if (cs.width != null && cs.height != null) {
+      parts.push(`${cs.width}\xD7${cs.height}`);
+    }
+    return parts.length ? parts.join(" \xB7 ") : null;
+  };
+  var filterByHost = (tasks, filterHost) => filterHost ? (tasks || []).filter((t) => safeHost(t.url) === filterHost) : tasks || [];
+  var taskLines = (t, displayIndex, opts = {}) => {
+    const mode = opts.screenshotMode || "note";
+    const lines = [`## ${displayIndex}. ${t.label}`];
+    lines.push(`- selector: \`${t.selector}\``);
+    const fw = t.framework;
+    if (fw && fw.componentName) {
+      lines.push(`- component: \`${fw.componentName}\``);
+    }
+    if (fw && fw.source && fw.source.file) {
+      const loc = fw.source.line ? `${fw.source.file}:${fw.source.line}` : fw.source.file;
+      lines.push(`- file: \`${loc}\``);
+    }
+    if (fw && fw.framework && !fw.componentName && !fw.source) {
+      lines.push(`- framework: ${fw.framework}`);
+    }
+    const styles = formatComputedStyles(t.computedStyles);
+    if (styles) {
+      lines.push(`- styles: ${styles}`);
+    }
+    lines.push(`- url: ${t.url}`);
+    if (t.screenshot && mode === "attached") {
+      lines.push(`- screenshot: attached image #${opts.attachmentNum || displayIndex}`);
+    } else if (t.screenshot && mode === "note") {
+      lines.push(`- screenshot: \u2713 captured (image data omitted from clipboard copy)`);
+    }
+    lines.push("");
+    lines.push(t.text);
+    if (t.screenshot && mode === "inline") {
+      lines.push("");
+      lines.push(`![${t.label}](${t.screenshot})`);
+    }
+    return lines;
+  };
+  var formatTask = (t, displayIndex, opts = {}) => {
+    return [
+      "# UI task (tsayru)",
+      "",
+      ...taskLines(t, displayIndex, { attachmentNum: 1, ...opts })
+    ].join("\n");
+  };
+  var formatTasks = (tasks, filterHost, opts = {}) => {
+    const list = filterByHost(tasks, filterHost);
+    if (list.length === 0) return "";
+    const header = filterHost ? `# UI tasks (tsayru) \u2014 ${filterHost}` : "# UI tasks (tsayru)";
+    const lines = [header, ""];
+    let attachmentNum = 0;
+    list.forEach((t, i) => {
+      if (t.screenshot) attachmentNum += 1;
+      lines.push(...taskLines(t, i + 1, { ...opts, attachmentNum }));
+      lines.push("");
+    });
+    return lines.join("\n");
+  };
+
   // src/core.js
   var STORAGE_KEY = "tsayru_tasks";
   var state = {
@@ -27,13 +126,6 @@
       node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
     }
     return node;
-  };
-  var safeHost = (url) => {
-    try {
-      return new URL(url).host;
-    } catch {
-      return null;
-    }
   };
   var plural = (n, singular = "", many = "s") => n === 1 ? singular : many;
   var isDevHost = () => {
@@ -70,9 +162,26 @@
   };
 
   // src/framework.js
-  var detectFramework = (target) => {
+  var mainWorldReady = null;
+  var ensureMainWorld = () => {
+    if (!mainWorldReady) {
+      mainWorldReady = new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage({ type: "TSAYRU_INJECT_MAIN" }, (resp) => {
+            void chrome.runtime.lastError;
+            resolve(!!resp?.ok);
+          });
+        } catch {
+          resolve(false);
+        }
+      });
+    }
+    return mainWorldReady;
+  };
+  var detectFramework = async (target) => {
+    if (!(target instanceof Element)) return null;
+    await ensureMainWorld();
     return new Promise((resolve) => {
-      if (!(target instanceof Element)) return resolve(null);
       const r = target.getBoundingClientRect();
       const x = r.left + Math.min(r.width / 2, 8);
       const y = r.top + Math.min(r.height / 2, 8);
@@ -122,22 +231,165 @@
     }
   };
 
+  // src/selector.js
+  var looksLikeHash = (c) => {
+    if (c.length < 6) return false;
+    if (/^css-[a-z0-9]{4,}$/.test(c)) return true;
+    if (/^[a-z0-9]{8,}$/i.test(c) && /\d/.test(c) && !/-/.test(c) && !/_/.test(c))
+      return true;
+    return false;
+  };
+  var anchorFor = (el2) => {
+    for (const attr of ["data-testid", "data-test", "data-cy"]) {
+      const v = el2.getAttribute(attr);
+      if (v) return `[${attr}="${CSS.escape(v)}"]`;
+    }
+    if (el2.id && /^[a-zA-Z][\w:-]*$/.test(el2.id)) return `#${CSS.escape(el2.id)}`;
+    const aria = el2.getAttribute("aria-label");
+    if (aria && aria.length > 0 && aria.length <= 60) {
+      return `${el2.tagName.toLowerCase()}[aria-label="${CSS.escape(aria)}"]`;
+    }
+    return null;
+  };
+  var segmentFor = (node) => {
+    const anchor = anchorFor(node);
+    if (anchor && (anchor.startsWith("#") || anchor.startsWith("["))) return anchor;
+    let part = node.tagName.toLowerCase();
+    if (anchor) {
+      part = anchor;
+    } else if (node.classList.length) {
+      const cls = [...node.classList].filter((c) => !c.startsWith("tsayru-") && !looksLikeHash(c)).slice(0, 6).map((c) => `.${CSS.escape(c)}`).join("");
+      part += cls;
+    }
+    const parent = node.parentElement;
+    if (parent) {
+      const sameTag = [...parent.children].filter(
+        (c) => c.tagName === node.tagName
+      );
+      if (sameTag.length > 1) {
+        part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
+      }
+    }
+    return part;
+  };
+  var isUniqueSelector = (sel, target, root = document) => {
+    try {
+      const m = root.querySelectorAll(sel);
+      return m.length === 1 && m[0] === target;
+    } catch {
+      return false;
+    }
+  };
+  var buildSelectorIn = (target, root) => {
+    const directAnchor = anchorFor(target);
+    if (directAnchor && isUniqueSelector(directAnchor, target, root))
+      return directAnchor;
+    const parts = [];
+    let node = target;
+    let safety = 30;
+    while (node && node.nodeType === 1 && safety > 0) {
+      const seg = segmentFor(node);
+      parts.unshift(seg);
+      const chain = parts.join(" > ");
+      if (isUniqueSelector(chain, target, root)) return chain;
+      if (seg.startsWith("#") || seg.startsWith("[data-")) break;
+      if (!node.parentElement || node.tagName === "BODY" || node.tagName === "HTML")
+        break;
+      node = node.parentElement;
+      safety -= 1;
+    }
+    const final = parts.join(" > ");
+    try {
+      const matches = root.querySelectorAll(final);
+      if (matches.length !== 1) {
+        console.warn(
+          `[tsayru] non-unique selector (${matches.length} matches):`,
+          final
+        );
+      }
+    } catch {
+    }
+    return final;
+  };
+  var buildSelector = (target) => {
+    if (!(target instanceof Element)) return "";
+    const root = target.getRootNode();
+    if (typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) {
+      const hostSel = buildSelector(root.host);
+      return `${hostSel} >>> ${buildSelectorIn(target, root)}`;
+    }
+    return buildSelectorIn(target, document);
+  };
+  var queryDeep = (selector) => {
+    try {
+      const hops = String(selector).split(" >>> ");
+      let scope = document;
+      let found = null;
+      for (const hop of hops) {
+        if (!scope) return null;
+        found = scope.querySelector(hop);
+        if (!found) return null;
+        scope = found.shadowRoot || null;
+      }
+      return found;
+    } catch {
+      return null;
+    }
+  };
+  var deepElementFromPoint = (x, y) => {
+    let el2 = document.elementFromPoint(x, y);
+    let guard = 12;
+    while (el2 && el2.shadowRoot && guard-- > 0) {
+      const inner = el2.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el2) break;
+      el2 = inner;
+    }
+    return el2;
+  };
+  var shortLabel = (target) => {
+    if (!target) return "";
+    const text = (target.textContent || "").trim().replace(/\s+/g, " ");
+    if (text.length === 0) return target.tagName.toLowerCase();
+    return text.length > 60 ? text.slice(0, 57) + "..." : text;
+  };
+
   // src/screenshot.js
   var PADDING = 8;
   var MAX_WIDTH = 800;
+  var JPEG_QUALITY = 0.85;
   var requestFullCapture = () => new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage({ type: "TSAYRU_CAPTURE" }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.dataUrl) {
-          resolve(null);
+        if (chrome.runtime.lastError) {
+          resolve({ dataUrl: null, error: chrome.runtime.lastError.message });
           return;
         }
-        resolve(resp.dataUrl);
+        resolve({
+          dataUrl: resp?.dataUrl || null,
+          error: resp?.dataUrl ? null : resp?.error || "no response"
+        });
       });
-    } catch {
-      resolve(null);
+    } catch (err) {
+      resolve({ dataUrl: null, error: String(err) });
     }
   });
+  var captureErrorMessage = (raw) => {
+    const s = String(raw || "");
+    if (/activeTab|permission|not in effect|cannot access/i.test(s)) {
+      return "no screenshot access \u2014 click the tsayru toolbar icon once";
+    }
+    if (/MAX_CAPTURE_VISIBLE_TAB|per second/i.test(s)) {
+      return "screenshot rate limit \u2014 try again in a second";
+    }
+    return "screenshot failed";
+  };
+  var reportCaptureError = (raw) => {
+    window.dispatchEvent(
+      new CustomEvent("tsayru-capture-error", {
+        detail: { message: captureErrorMessage(raw) }
+      })
+    );
+  };
   var loadImage = (dataUrl) => new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve(img);
@@ -167,8 +419,10 @@
     canvas.width = outW;
     canvas.height = outH;
     const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, outW, outH);
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-    return canvas.toDataURL("image/png");
+    return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
   };
   var withHiddenUI = async (fn) => {
     const sidebar = refs.sidebar;
@@ -196,100 +450,15 @@
     const rect = target.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
     return withHiddenUI(async () => {
-      const dataUrl = await requestFullCapture();
-      if (!dataUrl) return null;
+      const { dataUrl, error } = await requestFullCapture();
+      if (!dataUrl) {
+        reportCaptureError(error);
+        return null;
+      }
       const img = await loadImage(dataUrl);
       if (!img) return null;
       return cropToDataUrl(img, rect);
     });
-  };
-
-  // src/format.js
-  var rgbToHex = (s) => {
-    const m = String(s).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/);
-    if (!m) return s;
-    const [, r, g, b, a] = m;
-    if (a !== void 0 && parseFloat(a) === 0) return "transparent";
-    const hex = (n) => Math.max(0, Math.min(255, parseInt(n, 10))).toString(16).padStart(2, "0");
-    const base = `#${hex(r)}${hex(g)}${hex(b)}`;
-    if (a !== void 0 && parseFloat(a) < 1) {
-      return `${base} (\u03B1 ${parseFloat(a).toFixed(2)})`;
-    }
-    return base;
-  };
-  var formatComputedStyles = (cs) => {
-    if (!cs) return null;
-    const parts = [];
-    const fg = rgbToHex(cs.color);
-    if (fg && fg !== "#000000") parts.push(`color ${fg}`);
-    const bg = rgbToHex(cs.backgroundColor);
-    if (bg && bg !== "transparent") parts.push(`bg ${bg}`);
-    const fontFam = (cs.fontFamily || "").split(",")[0].trim().replace(/['"]/g, "");
-    const fontParts = [];
-    if (cs.fontSize) fontParts.push(cs.fontSize);
-    if (fontFam) fontParts.push(fontFam);
-    if (cs.fontWeight && cs.fontWeight !== "400") fontParts.push(cs.fontWeight);
-    if (fontParts.length) parts.push(`font ${fontParts.join(" ")}`);
-    if (cs.padding && cs.padding !== "0px") parts.push(`pad ${cs.padding}`);
-    if (cs.borderRadius && cs.borderRadius !== "0px")
-      parts.push(`r ${cs.borderRadius}`);
-    if (cs.border && !/^0px/.test(cs.border) && !/none/.test(cs.border)) {
-      parts.push(`border ${cs.border}`);
-    }
-    if (cs.width != null && cs.height != null) {
-      parts.push(`${cs.width}\xD7${cs.height}`);
-    }
-    return parts.length ? parts.join(" \xB7 ") : null;
-  };
-  var taskLines = (t, displayIndex, opts = {}) => {
-    const lines = [`## ${displayIndex}. ${t.label}`];
-    lines.push(`- selector: \`${t.selector}\``);
-    const fw = t.framework;
-    if (fw && fw.componentName) {
-      lines.push(`- component: \`${fw.componentName}\``);
-    }
-    if (fw && fw.source && fw.source.file) {
-      const loc = fw.source.line ? `${fw.source.file}:${fw.source.line}` : fw.source.file;
-      lines.push(`- file: \`${loc}\``);
-    }
-    if (fw && fw.framework && !fw.componentName && !fw.source) {
-      lines.push(`- framework: ${fw.framework}`);
-    }
-    const styles = formatComputedStyles(t.computedStyles);
-    if (styles) {
-      lines.push(`- styles: ${styles}`);
-    }
-    lines.push(`- url: ${t.url}`);
-    if (t.screenshot) {
-      if (opts.includeScreenshots) {
-        lines.push(`- screenshot:`);
-        lines.push("");
-        lines.push(`![${t.label}](${t.screenshot})`);
-      } else {
-        lines.push(`- screenshot: \u2713 (fetch via MCP tool \`tsayru_latest_tasks\`)`);
-      }
-    }
-    lines.push("");
-    lines.push(t.text);
-    return lines;
-  };
-  var formatTask = (t, displayIndex, opts = {}) => {
-    return [
-      "# UI task (tsayru)",
-      "",
-      ...taskLines(t, displayIndex, opts)
-    ].join("\n");
-  };
-  var formatTasks = (opts = {}) => {
-    const tasks = state.filterHost ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost) : state.tasks;
-    if (tasks.length === 0) return "";
-    const header = state.filterHost ? `# UI tasks (tsayru) \u2014 ${state.filterHost}` : "# UI tasks (tsayru)";
-    const lines = [header, ""];
-    tasks.forEach((t, i) => {
-      lines.push(...taskLines(t, i + 1, opts));
-      lines.push("");
-    });
-    return lines.join("\n");
   };
 
   // src/chatpicker.js
@@ -441,6 +610,7 @@
         return;
       }
       status.textContent = `Found ${tabs.length} web chat${tabs.length === 1 ? "" : "s"}:`;
+      tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
       for (const t of tabs) {
         const entry = {
           kind: "online",
@@ -464,6 +634,9 @@
   window.addEventListener("tsayru-persist-error", (e) => {
     flash(e?.detail?.message || "save error");
   });
+  window.addEventListener("tsayru-capture-error", (e) => {
+    flash(e?.detail?.message || "screenshot failed");
+  });
   var writeClipboard = async (text, okMsg) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -474,12 +647,16 @@
     }
   };
   var copyAll = async () => {
-    const text = formatTasks();
+    const tasks = filterByHost(state.tasks, state.filterHost);
+    const text = formatTasks(state.tasks, state.filterHost);
     if (!text) {
       flash("nothing to copy");
       return;
     }
     await writeClipboard(text, "copied");
+    postBatch(tasks, null).then((p) => {
+      if (!p.ok) console.warn("[tsayru] inbox save skipped:", p.error);
+    });
   };
   var copyOne = async (task, displayIndex) => {
     await writeClipboard(formatTask(task, displayIndex), "task copied");
@@ -513,10 +690,10 @@
       resolve({ ok: false, error: String(err) });
     }
   });
-  var pushToWebChat = (tabId, content) => new Promise((resolve) => {
+  var pushToWebChat = (tabId, content, images) => new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(
-        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content },
+        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content, images },
         (resp) => {
           if (chrome.runtime.lastError || !resp || !resp.ok) {
             resolve({
@@ -538,8 +715,9 @@
     postBatch(tasks, target).then((p) => {
       if (!p.ok) console.warn("[tsayru] inbox save failed:", p.error);
     });
-    const fullMd = formatTasks({ includeScreenshots: true });
-    const inject = await pushToWebChat(target.tabId, fullMd);
+    const md = formatTasks(tasks, state.filterHost, { screenshotMode: "attached" });
+    const images = tasks.map((t) => t.screenshot).filter(Boolean);
+    const inject = await pushToWebChat(target.tabId, md, images);
     if (inject.ok) {
       flash(`sent${where} \u2713`);
       return;
@@ -567,13 +745,7 @@
     if (state.inspecting) return;
     if (!selector) return;
     ensureOverlay();
-    let target = null;
-    try {
-      target = document.querySelector(selector);
-    } catch {
-      target = null;
-    }
-    moveHighlight(target);
+    moveHighlight(queryDeep(selector));
   };
   var onTaskLeave = () => {
     if (state.inspecting) return;
@@ -824,99 +996,17 @@
     renderSidebar();
   };
 
-  // src/selector.js
-  var looksLikeHash = (c) => {
-    if (c.length < 6) return false;
-    if (/^css-[a-z0-9]{4,}$/.test(c)) return true;
-    if (/^[a-z0-9]{8,}$/i.test(c) && /\d/.test(c) && !/-/.test(c) && !/_/.test(c))
-      return true;
-    return false;
-  };
-  var anchorFor = (el2) => {
-    for (const attr of ["data-testid", "data-test", "data-cy"]) {
-      const v = el2.getAttribute(attr);
-      if (v) return `[${attr}="${CSS.escape(v)}"]`;
-    }
-    if (el2.id && /^[a-zA-Z][\w:-]*$/.test(el2.id)) return `#${CSS.escape(el2.id)}`;
-    const aria = el2.getAttribute("aria-label");
-    if (aria && aria.length > 0 && aria.length <= 60) {
-      return `${el2.tagName.toLowerCase()}[aria-label="${CSS.escape(aria)}"]`;
-    }
-    return null;
-  };
-  var segmentFor = (node) => {
-    const anchor = anchorFor(node);
-    if (anchor && (anchor.startsWith("#") || anchor.startsWith("["))) return anchor;
-    let part = node.tagName.toLowerCase();
-    if (anchor) {
-      part = anchor;
-    } else if (node.classList.length) {
-      const cls = [...node.classList].filter((c) => !c.startsWith("tsayru-") && !looksLikeHash(c)).slice(0, 6).map((c) => `.${CSS.escape(c)}`).join("");
-      part += cls;
-    }
-    const parent = node.parentElement;
-    if (parent) {
-      const sameTag = [...parent.children].filter(
-        (c) => c.tagName === node.tagName
-      );
-      if (sameTag.length > 1) {
-        part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
-      }
-    }
-    return part;
-  };
-  var isUniqueSelector = (sel, target) => {
-    try {
-      const m = document.querySelectorAll(sel);
-      return m.length === 1 && m[0] === target;
-    } catch {
-      return false;
-    }
-  };
-  var buildSelector = (target) => {
-    if (!(target instanceof Element)) return "";
-    const directAnchor = anchorFor(target);
-    if (directAnchor && isUniqueSelector(directAnchor, target)) return directAnchor;
-    const parts = [];
-    let node = target;
-    let safety = 30;
-    while (node && node.nodeType === 1 && safety > 0) {
-      const seg = segmentFor(node);
-      parts.unshift(seg);
-      const chain = parts.join(" > ");
-      if (isUniqueSelector(chain, target)) return chain;
-      if (seg.startsWith("#") || seg.startsWith("[data-")) break;
-      if (!node.parentElement || node.tagName === "BODY" || node.tagName === "HTML")
-        break;
-      node = node.parentElement;
-      safety -= 1;
-    }
-    const final = parts.join(" > ");
-    try {
-      const matches = document.querySelectorAll(final);
-      if (matches.length !== 1) {
-        console.warn(
-          `[tsayru] non-unique selector (${matches.length} matches):`,
-          final
-        );
-      }
-    } catch {
-    }
-    return final;
-  };
-  var shortLabel = (target) => {
-    if (!target) return "";
-    const text = (target.textContent || "").trim().replace(/\s+/g, " ");
-    if (text.length === 0) return target.tagName.toLowerCase();
-    return text.length > 60 ? text.slice(0, 57) + "..." : text;
-  };
-
   // src/modal.js
   var closeModal = () => {
     if (refs.modal) {
       refs.modal.remove();
       refs.modal = null;
     }
+  };
+  var requestClose = () => {
+    const ta = refs.modal?.querySelector(".tsayru-modal-input");
+    if (ta && ta.value.trim() && !confirm("Discard this task draft?")) return;
+    closeModal();
   };
   var submitTask = async (selector, label, frameworkPromise, computedStyles, screenshot) => {
     if (!refs.modal) return;
@@ -946,6 +1036,7 @@
     await persist();
     renderSidebar();
     closeModal();
+    window.dispatchEvent(new CustomEvent("tsayru-task-added"));
   };
   var openModal = (target, computedStyles, screenshot) => {
     closeModal();
@@ -957,7 +1048,7 @@
       {
         class: "tsayru-modal-backdrop",
         onClick: (e) => {
-          if (e.target === refs.modal) closeModal();
+          if (e.target === refs.modal) requestClose();
         }
       },
       el(
@@ -969,7 +1060,7 @@
           el("div", { class: "tsayru-modal-title" }, "Task for this element"),
           el(
             "button",
-            { class: "tsayru-modal-close", onClick: closeModal },
+            { class: "tsayru-modal-close", onClick: requestClose },
             "\xD7"
           )
         ),
@@ -990,7 +1081,7 @@
           { class: "tsayru-modal-footer" },
           el(
             "button",
-            { class: "tsayru-modal-cancel", onClick: closeModal },
+            { class: "tsayru-modal-cancel", onClick: requestClose },
             "Cancel"
           ),
           el(
@@ -1013,7 +1104,7 @@
         submitTask(selector, label, frameworkPromise, computedStyles, screenshot);
       } else if (e.key === "Escape") {
         e.preventDefault();
-        closeModal();
+        requestClose();
       }
     });
   };
@@ -1040,6 +1131,7 @@
     state.inspecting = on;
     document.documentElement.classList.toggle("tsayru-inspecting", on);
     if (!on) moveHighlight(null);
+    if (on) ensureMainWorld();
     renderSidebar();
   };
   var showSidebar = () => {
@@ -1068,7 +1160,7 @@
   var isOurChrome = (node) => !!(node && node.closest && node.closest(".tsayru-sidebar, .tsayru-modal-backdrop, .tsayru-highlight"));
   var onMouseMove = (e) => {
     if (!state.inspecting) return;
-    const target = document.elementFromPoint(e.clientX, e.clientY);
+    const target = deepElementFromPoint(e.clientX, e.clientY);
     if (!target || target === state.hovered) return;
     if (isOurChrome(target)) {
       state.hovered = null;
@@ -1078,12 +1170,18 @@
     state.hovered = target;
     moveHighlight(target);
   };
+  var onPointerSuppress = (e) => {
+    if (!state.inspecting) return;
+    if (isOurChrome(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
   var onClick = async (e) => {
     if (!state.inspecting) return;
     if (e.target.closest(".tsayru-sidebar, .tsayru-modal-backdrop")) return;
     e.preventDefault();
     e.stopPropagation();
-    const target = document.elementFromPoint(e.clientX, e.clientY);
+    const target = deepElementFromPoint(e.clientX, e.clientY);
     if (!target) return;
     if (isOurChrome(target)) return;
     const computedStyles = snapshotComputedStyles(target);
@@ -1100,8 +1198,12 @@
   };
   var initEventListeners = () => {
     document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("pointerdown", onPointerSuppress, true);
+    document.addEventListener("mousedown", onPointerSuppress, true);
+    document.addEventListener("mouseup", onPointerSuppress, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("tsayru-task-added", () => setInspecting(true));
     window.addEventListener(
       "scroll",
       () => {

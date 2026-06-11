@@ -10,6 +10,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
 import {
@@ -18,9 +19,13 @@ import {
   clearInbox,
 } from "./lib/storage.js";
 
+const pkg = JSON.parse(
+  await readFile(new URL("./package.json", import.meta.url), "utf8"),
+);
+
 const server = new McpServer({
   name: "tsayru",
-  version: "0.1.0",
+  version: pkg.version,
 });
 
 const textResult = (text, isError = false) => ({
@@ -29,10 +34,11 @@ const textResult = (text, isError = false) => ({
 });
 
 // Filter batches by `targetProjectPath` matching the current process CWD.
-// When the extension picker stamps a batch with a project, only sessions
-// running in that project's CWD will see it through this tool.
-// Batches with no `targetProjectPath` (legacy / global sends) are returned
-// to every project as a fallback.
+// NOTE: the extension does not currently stamp batches with a project path
+// (the local-session picker was removed), so in practice every batch is
+// "global" and the fallback branch serves it. The preference logic is kept
+// for a future project-targeting feature — it is correct whenever the field
+// is present.
 const pickLatestForCwd = async () => {
   const cwd = process.cwd();
   const all = await listBatches({ limit: 200 });

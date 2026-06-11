@@ -2,7 +2,8 @@
 // Also: copy-to-clipboard and clear handlers, flash toast.
 
 import { el, state, refs, safeHost, plural, persist } from "./core.js";
-import { formatTasks, formatTask } from "./format.js";
+import { formatTasks, formatTask, filterByHost } from "./format.js";
+import { queryDeep } from "./selector.js";
 import {
   toggleInspector,
   hideSidebar,
@@ -22,6 +23,12 @@ window.addEventListener("tsayru-persist-error", (e) => {
   flash(e?.detail?.message || "save error");
 });
 
+// Surface screenshot-capture failures from screenshot.js (same pattern) —
+// previously a missing activeTab grant just silently dropped the screenshot.
+window.addEventListener("tsayru-capture-error", (e) => {
+  flash(e?.detail?.message || "screenshot failed");
+});
+
 const writeClipboard = async (text, okMsg) => {
   try {
     await navigator.clipboard.writeText(text);
@@ -33,12 +40,19 @@ const writeClipboard = async (text, okMsg) => {
 };
 
 const copyAll = async () => {
-  const text = formatTasks();
+  const tasks = filterByHost(state.tasks, state.filterHost);
+  const text = formatTasks(state.tasks, state.filterHost);
   if (!text) {
     flash("nothing to copy");
     return;
   }
   await writeClipboard(text, "copied");
+  // Best-effort inbox save so the copied batch (with screenshots) is also
+  // retrievable via MCP when the local server is running. Silent on failure —
+  // clipboard already succeeded, which is what the user asked for.
+  postBatch(tasks, null).then((p) => {
+    if (!p.ok) console.warn("[tsayru] inbox save skipped:", p.error);
+  });
 };
 
 const copyOne = async (task, displayIndex) => {
@@ -85,11 +99,11 @@ const postBatch = (tasks, target) =>
     }
   });
 
-const pushToWebChat = (tabId, content) =>
+const pushToWebChat = (tabId, content, images) =>
   new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(
-        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content },
+        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content, images },
         (resp) => {
           if (chrome.runtime.lastError || !resp || !resp.ok) {
             resolve({
@@ -122,8 +136,12 @@ const sendBatch = async (tasks, target) => {
   });
 
   // The actual delivery — DOM inject + auto-submit in the chosen tab.
-  const fullMd = formatTasks({ includeScreenshots: true });
-  const inject = await pushToWebChat(target.tabId, fullMd);
+  // Markdown stays light; screenshots travel as file attachments (synthetic
+  // paste in the composer) instead of inline base64, which ProseMirror choked
+  // on and the chat didn't render.
+  const md = formatTasks(tasks, state.filterHost, { screenshotMode: "attached" });
+  const images = tasks.map((t) => t.screenshot).filter(Boolean);
+  const inject = await pushToWebChat(target.tabId, md, images);
   if (inject.ok) {
     flash(`sent${where} ✓`);
     return;
@@ -157,13 +175,8 @@ const onTaskHover = (selector) => {
   if (state.inspecting) return;
   if (!selector) return;
   ensureOverlay();
-  let target = null;
-  try {
-    target = document.querySelector(selector);
-  } catch {
-    target = null;
-  }
-  moveHighlight(target);
+  // queryDeep resolves shadow-piercing " >>> " selectors too.
+  moveHighlight(queryDeep(selector));
 };
 
 const onTaskLeave = () => {

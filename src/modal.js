@@ -13,6 +13,15 @@ export const closeModal = () => {
   }
 };
 
+// Cancel path (Esc / backdrop / × / Cancel): confirm before discarding a
+// non-empty draft — losing typed text to a stray click is worse than one
+// extra confirm.
+const requestClose = () => {
+  const ta = refs.modal?.querySelector(".tsayru-modal-input");
+  if (ta && ta.value.trim() && !confirm("Discard this task draft?")) return;
+  closeModal();
+};
+
 const submitTask = async (
   selector,
   label,
@@ -49,6 +58,8 @@ const submitTask = async (
   await persist();
   renderSidebar();
   closeModal();
+  // Re-arm the inspector for the next element (handled in inspector.js).
+  window.dispatchEvent(new CustomEvent("tsayru-task-added"));
 };
 
 export const openModal = (target, computedStyles, screenshot) => {
@@ -62,7 +73,7 @@ export const openModal = (target, computedStyles, screenshot) => {
     {
       class: "tsayru-modal-backdrop",
       onClick: (e) => {
-        if (e.target === refs.modal) closeModal();
+        if (e.target === refs.modal) requestClose();
       },
     },
     el(
@@ -74,7 +85,7 @@ export const openModal = (target, computedStyles, screenshot) => {
         el("div", { class: "tsayru-modal-title" }, "Task for this element"),
         el(
           "button",
-          { class: "tsayru-modal-close", onClick: closeModal },
+          { class: "tsayru-modal-close", onClick: requestClose },
           "×",
         ),
       ),
@@ -98,7 +109,7 @@ export const openModal = (target, computedStyles, screenshot) => {
         { class: "tsayru-modal-footer" },
         el(
           "button",
-          { class: "tsayru-modal-cancel", onClick: closeModal },
+          { class: "tsayru-modal-cancel", onClick: requestClose },
           "Cancel",
         ),
         el(
@@ -123,7 +134,7 @@ export const openModal = (target, computedStyles, screenshot) => {
       submitTask(selector, label, frameworkPromise, computedStyles, screenshot);
     } else if (e.key === "Escape") {
       e.preventDefault();
-      closeModal();
+      requestClose();
     }
   });
 };

@@ -6,21 +6,49 @@ import { refs } from "./core.js";
 
 const PADDING = 8; // CSS px around captured element
 const MAX_WIDTH = 800; // CSS px — resize down if cropped wider than this
+// JPEG instead of PNG: 3–10× smaller, which protects the chrome.storage quota
+// and keeps web-chat attachments light. Screenshots of UI don't need lossless.
+const JPEG_QUALITY = 0.85;
 
 const requestFullCapture = () =>
   new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage({ type: "TSAYRU_CAPTURE" }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.dataUrl) {
-          resolve(null);
+        if (chrome.runtime.lastError) {
+          resolve({ dataUrl: null, error: chrome.runtime.lastError.message });
           return;
         }
-        resolve(resp.dataUrl);
+        resolve({
+          dataUrl: resp?.dataUrl || null,
+          error: resp?.dataUrl ? null : resp?.error || "no response",
+        });
       });
-    } catch {
-      resolve(null);
+    } catch (err) {
+      resolve({ dataUrl: null, error: String(err) });
     }
   });
+
+// Map raw chrome error strings to something the user can act on.
+const captureErrorMessage = (raw) => {
+  const s = String(raw || "");
+  if (/activeTab|permission|not in effect|cannot access/i.test(s)) {
+    return "no screenshot access — click the tsayru toolbar icon once";
+  }
+  if (/MAX_CAPTURE_VISIBLE_TAB|per second/i.test(s)) {
+    return "screenshot rate limit — try again in a second";
+  }
+  return "screenshot failed";
+};
+
+// Surface capture failures to the UI without importing the toast helper
+// (same CustomEvent pattern as persist errors — avoids a cycle with sidebar.js).
+const reportCaptureError = (raw) => {
+  window.dispatchEvent(
+    new CustomEvent("tsayru-capture-error", {
+      detail: { message: captureErrorMessage(raw) },
+    }),
+  );
+};
 
 const loadImage = (dataUrl) =>
   new Promise((resolve) => {
@@ -60,8 +88,11 @@ const cropToDataUrl = (img, rect) => {
   canvas.width = outW;
   canvas.height = outH;
   const ctx = canvas.getContext("2d");
+  // JPEG has no alpha — fill white so transparent regions don't turn black.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, outW, outH);
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-  return canvas.toDataURL("image/png");
+  return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
 };
 
 // Briefly hide our own chrome (sidebar, highlight) so the capture is clean.
@@ -89,16 +120,21 @@ const withHiddenUI = async (fn) => {
   }
 };
 
-// Capture a screenshot of `target` element. Returns a PNG dataURL or null.
+// Capture a screenshot of `target` element. Returns a JPEG dataURL or null.
 // The element's rect is sampled BEFORE we hide UI (which awaits a frame, during
 // which the page may scroll or reflow), so the crop matches what was clicked.
+// Capture failures are reported to the sidebar toast — previously the task
+// just silently saved without a screenshot (e.g. no activeTab on *.test hosts).
 export const captureElement = async (target) => {
   if (!(target instanceof Element)) return null;
   const rect = target.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return null;
   return withHiddenUI(async () => {
-    const dataUrl = await requestFullCapture();
-    if (!dataUrl) return null;
+    const { dataUrl, error } = await requestFullCapture();
+    if (!dataUrl) {
+      reportCaptureError(error);
+      return null;
+    }
     const img = await loadImage(dataUrl);
     if (!img) return null;
     return cropToDataUrl(img, rect);

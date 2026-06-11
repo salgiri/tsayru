@@ -1,7 +1,15 @@
-// Markdown formatter for the clipboard payload.
-// Pure functions that take task objects — no DOM, no state mutation.
+// Markdown formatter for task payloads.
+// Pure functions — no DOM, no extension APIs, no module-level state — so the
+// same module serves the extension bundle AND the Node server
+// (server/lib/format.js re-exports from here; the renderers must never fork).
 
-import { state, safeHost } from "./core.js";
+export const safeHost = (url) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+};
 
 // Convert "rgb(0, 0, 0)" / "rgba(0, 0, 0, 1)" to "#000000". Returns input unchanged on miss.
 const rgbToHex = (s) => {
@@ -47,12 +55,20 @@ const formatComputedStyles = (cs) => {
   return parts.length ? parts.join(" · ") : null;
 };
 
+export const filterByHost = (tasks, filterHost) =>
+  filterHost
+    ? (tasks || []).filter((t) => safeHost(t.url) === filterHost)
+    : tasks || [];
+
 // Render a single task as markdown lines (no header, no trailing blank).
 // `displayIndex` is 1-based — what shows up in `## N. <label>`.
-// `opts.includeScreenshots`: when true, embeds the base64 PNG inline (heavy
-// but renders in claude.ai / Claude Code chat). Default false — clipboard
-// stays light, server route delivers the heavy version via MCP.
+//
+// opts.screenshotMode controls how a captured screenshot is referenced:
+//   "inline"   — embed the base64 image as a markdown image (heavy; server/MCP route)
+//   "attached" — "attached image #N" note (web-chat push ships files separately)
+//   "note"     — plain "captured" note (default; clipboard stays light)
 const taskLines = (t, displayIndex, opts = {}) => {
+  const mode = opts.screenshotMode || "note";
   const lines = [`## ${displayIndex}. ${t.label}`];
   lines.push(`- selector: \`${t.selector}\``);
   const fw = t.framework;
@@ -73,17 +89,17 @@ const taskLines = (t, displayIndex, opts = {}) => {
     lines.push(`- styles: ${styles}`);
   }
   lines.push(`- url: ${t.url}`);
-  if (t.screenshot) {
-    if (opts.includeScreenshots) {
-      lines.push(`- screenshot:`);
-      lines.push("");
-      lines.push(`![${t.label}](${t.screenshot})`);
-    } else {
-      lines.push(`- screenshot: ✓ (fetch via MCP tool \`tsayru_latest_tasks\`)`);
-    }
+  if (t.screenshot && mode === "attached") {
+    lines.push(`- screenshot: attached image #${opts.attachmentNum || displayIndex}`);
+  } else if (t.screenshot && mode === "note") {
+    lines.push(`- screenshot: ✓ captured (image data omitted from clipboard copy)`);
   }
   lines.push("");
   lines.push(t.text);
+  if (t.screenshot && mode === "inline") {
+    lines.push("");
+    lines.push(`![${t.label}](${t.screenshot})`);
+  }
   return lines;
 };
 
@@ -93,21 +109,22 @@ export const formatTask = (t, displayIndex, opts = {}) => {
   return [
     "# UI task (tsayru)",
     "",
-    ...taskLines(t, displayIndex, opts),
+    ...taskLines(t, displayIndex, { attachmentNum: 1, ...opts }),
   ].join("\n");
 };
 
-export const formatTasks = (opts = {}) => {
-  const tasks = state.filterHost
-    ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost)
-    : state.tasks;
-  if (tasks.length === 0) return "";
-  const header = state.filterHost
-    ? `# UI tasks (tsayru) — ${state.filterHost}`
+// Format a task list. `filterHost` narrows by page host and suffixes the header.
+export const formatTasks = (tasks, filterHost, opts = {}) => {
+  const list = filterByHost(tasks, filterHost);
+  if (list.length === 0) return "";
+  const header = filterHost
+    ? `# UI tasks (tsayru) — ${filterHost}`
     : "# UI tasks (tsayru)";
   const lines = [header, ""];
-  tasks.forEach((t, i) => {
-    lines.push(...taskLines(t, i + 1, opts));
+  let attachmentNum = 0;
+  list.forEach((t, i) => {
+    if (t.screenshot) attachmentNum += 1;
+    lines.push(...taskLines(t, i + 1, { ...opts, attachmentNum }));
     lines.push("");
   });
   return lines.join("\n");

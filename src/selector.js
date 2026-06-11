@@ -62,24 +62,21 @@ const segmentFor = (node) => {
   return part;
 };
 
-const isUniqueSelector = (sel, target) => {
+const isUniqueSelector = (sel, target, root = document) => {
   try {
-    const m = document.querySelectorAll(sel);
+    const m = root.querySelectorAll(sel);
     return m.length === 1 && m[0] === target;
   } catch {
     return false;
   }
 };
 
-// Priority: data-testid → id → aria-label → tag.classes chain.
-// After each step, verify uniqueness; expand context up the tree until unique,
-// anchor reached, or we hit body/html. If still non-unique, log a warning so
-// the user can spot the issue rather than silently misdirecting Claude.
-export const buildSelector = (target) => {
-  if (!(target instanceof Element)) return "";
-
+// Core walk, scoped to one root (document or a ShadowRoot — selectors can't
+// cross shadow boundaries, so each root is built independently).
+const buildSelectorIn = (target, root) => {
   const directAnchor = anchorFor(target);
-  if (directAnchor && isUniqueSelector(directAnchor, target)) return directAnchor;
+  if (directAnchor && isUniqueSelector(directAnchor, target, root))
+    return directAnchor;
 
   const parts = [];
   let node = target;
@@ -88,7 +85,7 @@ export const buildSelector = (target) => {
     const seg = segmentFor(node);
     parts.unshift(seg);
     const chain = parts.join(" > ");
-    if (isUniqueSelector(chain, target)) return chain;
+    if (isUniqueSelector(chain, target, root)) return chain;
     if (seg.startsWith("#") || seg.startsWith("[data-")) break;
     if (
       !node.parentElement ||
@@ -102,7 +99,7 @@ export const buildSelector = (target) => {
   const final = parts.join(" > ");
   // Walked to root and still ambiguous — surface so the markdown isn't trusted blindly.
   try {
-    const matches = document.querySelectorAll(final);
+    const matches = root.querySelectorAll(final);
     if (matches.length !== 1) {
       console.warn(
         `[tsayru] non-unique selector (${matches.length} matches):`,
@@ -111,6 +108,53 @@ export const buildSelector = (target) => {
     }
   } catch {}
   return final;
+};
+
+// Priority: data-testid → id → aria-label → tag.classes chain.
+// After each step, verify uniqueness; expand context up the tree until unique,
+// anchor reached, or we hit body/html.
+// Shadow DOM: elements inside shadow roots get `host-selector >>> inner-selector`
+// (the DevTools-style piercing notation — not standard CSS, but unambiguous
+// for a human or Claude, and queryDeep() below resolves it for hover preview).
+export const buildSelector = (target) => {
+  if (!(target instanceof Element)) return "";
+  const root = target.getRootNode();
+  if (typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) {
+    const hostSel = buildSelector(root.host);
+    return `${hostSel} >>> ${buildSelectorIn(target, root)}`;
+  }
+  return buildSelectorIn(target, document);
+};
+
+// Resolve a selector that may contain " >>> " shadow-root hops.
+export const queryDeep = (selector) => {
+  try {
+    const hops = String(selector).split(" >>> ");
+    let scope = document;
+    let found = null;
+    for (const hop of hops) {
+      if (!scope) return null;
+      found = scope.querySelector(hop);
+      if (!found) return null;
+      scope = found.shadowRoot || null;
+    }
+    return found;
+  } catch {
+    return null;
+  }
+};
+
+// elementFromPoint that descends into (open) shadow roots, so the inspector
+// targets the real element instead of the web-component host.
+export const deepElementFromPoint = (x, y) => {
+  let el = document.elementFromPoint(x, y);
+  let guard = 12;
+  while (el && el.shadowRoot && guard-- > 0) {
+    const inner = el.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  return el;
 };
 
 export const shortLabel = (target) => {

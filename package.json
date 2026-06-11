@@ -1,13 +1,17 @@
 {
   "name": "tsayru-extension",
-  "version": "0.5.0",
+  "version": "0.13.0",
   "private": true,
+  "type": "module",
   "description": "Build pipeline for the tsayru Chrome extension. The extension itself lives in extension/.",
   "scripts": {
     "build": "esbuild src/index.js --bundle --outfile=extension/content.js --format=iife --target=chrome111 --legal-comments=none",
-    "watch": "esbuild src/index.js --bundle --outfile=extension/content.js --format=iife --target=chrome111 --legal-comments=none --watch"
+    "watch": "esbuild src/index.js --bundle --outfile=extension/content.js --format=iife --target=chrome111 --legal-comments=none --watch",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.0",
+    "vitest": "^2.1.0"
   }
 }

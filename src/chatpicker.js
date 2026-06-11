@@ -191,6 +191,9 @@ export const pickTargetChat = () =>
         return;
       }
       status.textContent = `Found ${tabs.length} web chat${tabs.length === 1 ? "" : "s"}:`;
+      // Most recently used first — the tab the user wants is almost always
+      // the one they just looked at.
+      tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
       for (const t of tabs) {
         const entry = {
           kind: "online",

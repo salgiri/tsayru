@@ -19,7 +19,6 @@ import {
   readBatch,
   deleteBatch,
 } from "./lib/storage.js";
-import { listRecentSessions } from "./lib/chats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,12 +31,29 @@ const pkg = JSON.parse(
 
 const app = express();
 
-// CORS — extension origin is unstable (chrome-extension://<id>) and the server
-// is localhost-only anyway, so a permissive policy is safe.
+// Origin gate. Binding to 127.0.0.1 does NOT protect the inbox from the
+// user's own browser: any web page can fetch http://127.0.0.1:7777/... and a
+// permissive CORS policy would let it read batches (screenshots, source
+// paths) or wipe the inbox. Browsers always attach an http(s) Origin to such
+// cross-origin requests, so we allow only:
+//   - requests with no Origin header (curl, local scripts, same-machine tools)
+//   - the extension's own background worker (Origin: chrome-extension://…)
+// Everything else gets 403 and no CORS approval.
+const originAllowed = (origin) =>
+  origin === undefined || origin.startsWith("chrome-extension://");
+
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  const origin = req.headers.origin;
+  if (!originAllowed(origin)) {
+    res.status(403).json({ ok: false, error: "forbidden origin" });
+    return;
+  }
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Vary", "Origin");
+  }
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
@@ -46,7 +62,7 @@ app.use((req, res, next) => {
 });
 
 // Extension can ship screenshots as base64 data URLs — bump the limit so
-// a batch with a few PNGs still fits.
+// a batch with a few images still fits.
 app.use(express.json({ limit: "25mb" }));
 
 app.get("/health", (_req, res) => {
@@ -90,20 +106,10 @@ app.post("/tasks", async (req, res) => {
     res.json({ ok: true, ...meta });
   } catch (err) {
     console.error("[tsayru] POST /tasks failed:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-// List recent Claude Code SESSIONS (one per .jsonl) so the extension picker
-// can show the actual chats — same titles the user sees as VS Code tabs.
-app.get("/chats/recent", async (req, res) => {
-  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
-  try {
-    const sessions = await listRecentSessions(limit);
-    res.json({ ok: true, sessions });
-  } catch (err) {
-    console.error("[tsayru] GET /chats/recent failed:", err);
-    res.status(500).json({ ok: false, error: String(err.message || err) });
+    const invalid = /must be|too many/.test(String(err?.message));
+    res
+      .status(invalid ? 400 : 500)
+      .json({ ok: false, error: String(err.message || err) });
   }
 });
 
@@ -153,7 +159,18 @@ app.use((_req, res) => {
   res.status(404).json({ ok: false, error: "not found" });
 });
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`[tsayru] inbox listening on http://${HOST}:${PORT}`);
   console.log(`[tsayru] version ${pkg.version}`);
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `[tsayru] port ${PORT} is already in use — is another tsayru-server running?\n` +
+        `[tsayru] pick another port with: TSAYRU_PORT=<port> node http.js`,
+    );
+    process.exit(1);
+  }
+  throw err;
 });

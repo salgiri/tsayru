@@ -1,6 +1,6 @@
 {
   "name": "tsayru-server",
-  "version": "0.1.0",
+  "version": "0.13.0",
   "description": "HTTP inbox + MCP server companion for the tsayru Chrome extension.",
   "private": true,
   "type": "module",

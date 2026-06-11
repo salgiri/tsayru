@@ -3,24 +3,37 @@
 // Both http.js and mcp.js share this module so the inbox is a single source of truth.
 
 import { promises as fs } from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 
 import { formatBatch } from "./format.js";
 
-const INBOX_ROOT = path.join(os.homedir(), ".tsayru", "inbox");
+// Overridable for tests (TSAYRU_INBOX) — read once at import time.
+const INBOX_ROOT =
+  process.env.TSAYRU_INBOX || path.join(os.homedir(), ".tsayru", "inbox");
 
-// batchId is the ISO timestamp with non-filename-safe chars stripped.
-// Sortable lexicographically -> newest-first listing is just sort+reverse.
+// Retention cap: oldest batches beyond this count are pruned on every save,
+// so the inbox can't grow without bound (batches can carry megabytes of
+// base64 screenshots). Overridable for tests.
+const MAX_BATCHES = Number(process.env.TSAYRU_MAX_BATCHES || 200);
+
+const MAX_TASKS_PER_BATCH = 500;
+
+// batchId is the ISO timestamp with non-filename-safe chars stripped, plus a
+// short random suffix so two saves in the same millisecond can't collide.
+// Still sortable lexicographically -> newest-first listing is sort+reverse.
 const newBatchId = () =>
-  new Date().toISOString().replace(/[:.]/g, "-");
+  new Date().toISOString().replace(/[:.]/g, "-") +
+  "-" +
+  randomBytes(3).toString("hex");
 
 const ensureRoot = async () => {
   await fs.mkdir(INBOX_ROOT, { recursive: true });
 };
 
 // Allowlist match: only chars produced by our own batchId generator
-// (digits, hyphens, T/Z separators from ISO timestamps with `:`/`.` replaced).
+// (digits, hyphens, T/Z separators from ISO timestamps, hex suffix).
 // Blocks `.`, `..`, path separators, NUL, and any traversal vector.
 const isSafeBatchId = (id) =>
   typeof id === "string" &&
@@ -33,6 +46,27 @@ const batchDir = (batchId) => {
     throw new Error(`unsafe batchId: ${batchId}`);
   }
   return path.join(INBOX_ROOT, batchId);
+};
+
+// Drop the oldest batch folders beyond MAX_BATCHES. Best-effort — a prune
+// failure must never fail the save that triggered it.
+const pruneOldBatches = async () => {
+  let entries;
+  try {
+    entries = await fs.readdir(INBOX_ROOT, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort()
+    .reverse(); // newest first
+  for (const name of dirs.slice(MAX_BATCHES)) {
+    try {
+      await fs.rm(path.join(INBOX_ROOT, name), { recursive: true, force: true });
+    } catch {}
+  }
 };
 
 // Persist a new batch. `payload` is the body posted by the extension.
@@ -48,6 +82,12 @@ export const saveBatch = async ({
 }) => {
   if (!Array.isArray(tasks)) {
     throw new Error("tasks must be an array");
+  }
+  if (tasks.length > MAX_TASKS_PER_BATCH) {
+    throw new Error(`too many tasks (max ${MAX_TASKS_PER_BATCH})`);
+  }
+  if (!tasks.every((t) => t && typeof t === "object" && !Array.isArray(t))) {
+    throw new Error("each task must be an object");
   }
   await ensureRoot();
   const batchId = newBatchId();
@@ -75,6 +115,8 @@ export const saveBatch = async ({
     "utf8",
   );
   await fs.writeFile(path.join(dir, "tasks.md"), md, "utf8");
+
+  await pruneOldBatches();
 
   return { batchId, path: dir, addedAt, count: tasks.length };
 };

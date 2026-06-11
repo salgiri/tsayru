@@ -34,13 +34,8 @@ export const el = (tag, attrs = {}, ...children) => {
   return node;
 };
 
-export const safeHost = (url) => {
-  try {
-    return new URL(url).host;
-  } catch {
-    return null;
-  }
-};
+// safeHost lives in format.js (the pure shared module); re-export for UI modules.
+export { safeHost } from "./format.js";
 
 // Pluralizer: returns the plural form for `n`. Defaults are English (s).
 export const plural = (n, singular = "", many = "s") =>
