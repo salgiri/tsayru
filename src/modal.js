@@ -22,13 +22,45 @@ const requestClose = () => {
   closeModal();
 };
 
-const submitTask = async (
-  selector,
-  label,
-  frameworkPromise,
-  computedStyles,
-  screenshot,
-) => {
+// Build and persist a task object. `ctx` carries everything captured at
+// click time: { computedStyles, screenshot, html, env }.
+const addTask = async (selector, label, text, frameworkPromise, ctx) => {
+  const framework = await Promise.race([
+    frameworkPromise || Promise.resolve(null),
+    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+  state.tasks.push({
+    // Stable id — the done-status sync from the server matches on it.
+    id: crypto.randomUUID(),
+    selector,
+    label,
+    text,
+    url: location.href,
+    framework: framework || null,
+    computedStyles: ctx?.computedStyles || null,
+    screenshot: ctx?.screenshot || null,
+    html: ctx?.html || null,
+    env: ctx?.env || null,
+    done: false,
+    addedAt: new Date().toISOString(),
+  });
+  await persist();
+  renderSidebar();
+  // Re-arm the inspector for the next element (handled in inspector.js).
+  window.dispatchEvent(new CustomEvent("tsayru-task-added"));
+};
+
+// Alt+click path: skip the modal entirely, save the task with empty text.
+// The user fills descriptions later via inline edit (✎); the formatter
+// substitutes a sensible instruction if they never do.
+export const quickAddTask = async (target, ctx) => {
+  const selector = buildSelector(target);
+  const label = shortLabel(target);
+  const frameworkPromise = detectFramework(target).catch(() => null);
+  await addTask(selector, label, "", frameworkPromise, ctx);
+};
+
+const submitTask = async (selector, label, frameworkPromise, ctx) => {
   if (!refs.modal) return;
   // Re-entry guard: rapid Enter/double-click was creating duplicate tasks
   // because the previous invocation hadn't finished its `await` yet.
@@ -41,32 +73,16 @@ const submitTask = async (
     ta.focus();
     return;
   }
-  const framework = await Promise.race([
-    frameworkPromise || Promise.resolve(null),
-    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
-  ]);
-  state.tasks.push({
-    selector,
-    label,
-    text,
-    url: location.href,
-    framework: framework || null,
-    computedStyles: computedStyles || null,
-    screenshot: screenshot || null,
-    addedAt: new Date().toISOString(),
-  });
-  await persist();
-  renderSidebar();
+  await addTask(selector, label, text, frameworkPromise, ctx);
   closeModal();
-  // Re-arm the inspector for the next element (handled in inspector.js).
-  window.dispatchEvent(new CustomEvent("tsayru-task-added"));
 };
 
-export const openModal = (target, computedStyles, screenshot) => {
+export const openModal = (target, ctx = {}) => {
   closeModal();
   const selector = buildSelector(target);
   const label = shortLabel(target);
   const frameworkPromise = detectFramework(target).catch(() => null);
+  const screenshot = ctx.screenshot || null;
 
   refs.modal = el(
     "div",
@@ -116,8 +132,7 @@ export const openModal = (target, computedStyles, screenshot) => {
           "button",
           {
             class: "tsayru-modal-submit",
-            onClick: () =>
-              submitTask(selector, label, frameworkPromise, computedStyles, screenshot),
+            onClick: () => submitTask(selector, label, frameworkPromise, ctx),
           },
           "Add (Enter)",
         ),
@@ -131,7 +146,7 @@ export const openModal = (target, computedStyles, screenshot) => {
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      submitTask(selector, label, frameworkPromise, computedStyles, screenshot);
+      submitTask(selector, label, frameworkPromise, ctx);
     } else if (e.key === "Escape") {
       e.preventDefault();
       requestClose();

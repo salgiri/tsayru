@@ -61,6 +61,39 @@ export const detectFramework = async (target) => {
   });
 };
 
+// Sanitized outerHTML snippet (≤ maxLen chars): whitespace collapsed, bulky
+// data-URLs stubbed out, backticks neutralized so it can sit inside a
+// markdown code span. Gives Claude the element's real structure.
+export const snapshotHtml = (target, maxLen = 300) => {
+  if (!(target instanceof Element)) return null;
+  try {
+    let html = target.outerHTML.replace(/\s+/g, " ").trim();
+    html = html.replace(/(src|href|srcset)="data:[^"]{40,}"/g, '$1="data:…"');
+    html = html.replace(/`/g, "'");
+    if (html.length > maxLen) html = html.slice(0, maxLen - 1) + "…";
+    return html;
+  } catch {
+    return null;
+  }
+};
+
+// Page environment at capture time — viewport, color scheme, pixel ratio.
+// One markdown line, but it's the difference between "button broken" and
+// "button broken at 375px in dark mode".
+export const snapshotEnv = () => {
+  try {
+    return {
+      viewport: `${window.innerWidth}×${window.innerHeight}`,
+      dpr: window.devicePixelRatio || 1,
+      scheme: window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light",
+    };
+  } catch {
+    return null;
+  }
+};
+
 // Snapshot the visually meaningful computed styles. Defaults are filtered out at format time.
 export const snapshotComputedStyles = (target) => {
   if (!(target instanceof Element)) return null;

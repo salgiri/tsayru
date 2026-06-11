@@ -44,8 +44,9 @@ extension talks to it over loopback.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/tasks` | Save a batch. Body: `{ tasks, host, filterHost }`. Returns `{ ok, batchId, path, addedAt, count }`. |
+| `POST` | `/tasks` | Save a batch. Body: `{ tasks, host, filterHost }`. Returns `{ ok, batchId, path, addedAt, count }`. If `host` is a localhost port, the batch is auto-stamped with the dev server's project directory (resolved via `lsof`). |
 | `GET` | `/tasks/list?limit=50` | Recent batches metadata, newest first. |
+| `GET` | `/tasks/done/recent` | Ids of done tasks across recent batches (polled by the extension sidebar). |
 | `GET` | `/tasks/:batchId` | Full batch envelope JSON. |
 | `DELETE` | `/tasks/:batchId` | Remove the batch folder. |
 | `GET` | `/health` | `{ ok: true, version }`. |
@@ -81,9 +82,10 @@ Restart Claude Code. The following tools become available:
 
 | Tool | Input | Returns |
 | --- | --- | --- |
-| `tsayru_latest_tasks` | — | Latest batch as markdown. |
+| `tsayru_latest_tasks` | — | Latest batch as markdown (project-targeted first, prefix-tolerant cwd match). |
 | `tsayru_list_batches` | `{ limit?: number }` | JSON array of batch metadata. |
 | `tsayru_get_batch` | `{ batchId: string }` | The named batch as markdown. |
+| `tsayru_mark_done` | `{ batchId?, taskIds?, indices? }` | Marks tasks completed; defaults to the latest project batch / all tasks. The user's sidebar reflects it within ~10s. |
 | `tsayru_clear_inbox` | — | `{ deleted: number }`. Irreversible. |
 
 The MCP server spawns per-session over stdio, so you do not need to keep
@@ -145,7 +147,8 @@ server/
 ├── http.js          # Express HTTP inbox, localhost-only, origin-gated
 ├── mcp.js           # MCP stdio server
 ├── lib/
-│   ├── storage.js   # ~/.tsayru/inbox CRUD + retention, shared by both entrypoints
+│   ├── storage.js   # ~/.tsayru/inbox CRUD + retention + done-status, shared by both entrypoints
+│   ├── project.js   # localhost port → dev-server cwd (lsof) for auto-targeting
 │   └── format.js    # re-exports the shared renderer from /src/format.js
 └── README.md
 ```

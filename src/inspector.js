@@ -2,11 +2,16 @@
 // Sidebar visibility (show/hide/toggle) — kept here because hiding the panel must turn off inspector.
 
 import { el, state, refs } from "./core.js";
-import { snapshotComputedStyles, ensureMainWorld } from "./framework.js";
+import {
+  snapshotComputedStyles,
+  snapshotHtml,
+  snapshotEnv,
+  ensureMainWorld,
+} from "./framework.js";
 import { deepElementFromPoint } from "./selector.js";
 import { captureElement } from "./screenshot.js";
 import { ensureSidebar, renderSidebar } from "./sidebar.js";
-import { openModal } from "./modal.js";
+import { openModal, quickAddTask } from "./modal.js";
 
 // ---------- Highlight overlay ----------
 
@@ -113,14 +118,22 @@ const onClick = async (e) => {
   const target = deepElementFromPoint(e.clientX, e.clientY);
   if (!target) return;
   if (isOurChrome(target)) return;
-  // Capture visual context BEFORE any DOM mutation (modal/highlight removal).
-  const computedStyles = snapshotComputedStyles(target);
+  // Capture textual context BEFORE any DOM mutation (modal/highlight removal).
+  const ctx = {
+    computedStyles: snapshotComputedStyles(target),
+    html: snapshotHtml(target),
+    env: snapshotEnv(),
+  };
+  const quick = e.altKey; // Alt+click = quick-mark, no modal
   setInspecting(false);
   moveHighlight(null);
-  // Screenshot in parallel with no-op delay (user perceives ~150ms before modal opens).
   // captureElement gracefully returns null on failure (rate-limit, chrome:// pages, etc.).
-  const screenshot = await captureElement(target);
-  openModal(target, computedStyles, screenshot);
+  ctx.screenshot = await captureElement(target);
+  if (quick) {
+    await quickAddTask(target, ctx);
+    return;
+  }
+  openModal(target, ctx);
 };
 
 const onKeyDown = (e) => {

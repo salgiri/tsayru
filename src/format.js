@@ -69,11 +69,19 @@ export const filterByHost = (tasks, filterHost) =>
 //   "note"     — plain "captured" note (default; clipboard stays light)
 const taskLines = (t, displayIndex, opts = {}) => {
   const mode = opts.screenshotMode || "note";
-  const lines = [`## ${displayIndex}. ${t.label}`];
+  const check = t.done ? "✅ " : "";
+  const lines = [`## ${displayIndex}. ${check}${t.label}`];
   lines.push(`- selector: \`${t.selector}\``);
   const fw = t.framework;
   if (fw && fw.componentName) {
-    lines.push(`- component: \`${fw.componentName}\``);
+    // Breadcrumbs (innermost-first in the data) render outermost-first:
+    // `SaveButton` (in App › SettingsPage)
+    const chain = Array.isArray(fw.componentChain) ? fw.componentChain : null;
+    const crumbs =
+      chain && chain.length > 1
+        ? ` (in ${chain.slice(1).reverse().join(" › ")})`
+        : "";
+    lines.push(`- component: \`${fw.componentName}\`${crumbs}`);
   }
   if (fw && fw.source && fw.source.file) {
     const loc = fw.source.line
@@ -88,6 +96,15 @@ const taskLines = (t, displayIndex, opts = {}) => {
   if (styles) {
     lines.push(`- styles: ${styles}`);
   }
+  if (t.html) {
+    lines.push(`- html: \`${t.html}\``);
+  }
+  if (t.env && t.env.viewport) {
+    const envParts = [t.env.viewport];
+    if (t.env.scheme) envParts.push(t.env.scheme);
+    if (t.env.dpr && t.env.dpr !== 1) envParts.push(`dpr ${t.env.dpr}`);
+    lines.push(`- env: ${envParts.join(" · ")}`);
+  }
   lines.push(`- url: ${t.url}`);
   if (t.screenshot && mode === "attached") {
     lines.push(`- screenshot: attached image #${opts.attachmentNum || displayIndex}`);
@@ -95,7 +112,11 @@ const taskLines = (t, displayIndex, opts = {}) => {
     lines.push(`- screenshot: ✓ captured (image data omitted from clipboard copy)`);
   }
   lines.push("");
-  lines.push(t.text);
+  // Quick-marked tasks (Alt+click) may ship without a description.
+  lines.push(
+    t.text ||
+      "(no description provided — infer the needed change from the screenshot and element context)",
+  );
   if (t.screenshot && mode === "inline") {
     lines.push("");
     lines.push(`![${t.label}](${t.screenshot})`);

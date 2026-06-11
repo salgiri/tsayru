@@ -603,3 +603,43 @@ html.tsayru-inspecting * {
     transform: translateX(-50%) translateY(0);
   }
 }
+
+/* ---------- v0.14.0: done tasks, quick-mark placeholder, undo toast ---------- */
+
+.tsayru-task-done {
+  opacity: 0.55;
+}
+
+.tsayru-task-done .tsayru-task-text {
+  text-decoration: line-through;
+}
+
+.tsayru-task-done .tsayru-task-label::before {
+  content: "✓ ";
+  color: #4caf7d;
+}
+
+.tsayru-task-text-empty {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.tsayru-flash-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tsayru-flash-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 5px;
+  color: inherit;
+  font: inherit;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.tsayru-flash-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}

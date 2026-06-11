@@ -18,7 +18,9 @@ import {
   listBatches,
   readBatch,
   deleteBatch,
+  listDoneTaskIds,
 } from "./lib/storage.js";
+import { resolveProjectByHost } from "./lib/project.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -84,11 +86,21 @@ app.post("/tasks", async (req, res) => {
     return;
   }
   try {
+    // Auto-target: resolve the project behind a localhost dev server from the
+    // listening process's cwd, so MCP routes the batch to the right Claude
+    // Code session without the user picking anything.
+    let projectPath = targetProjectPath || null;
+    if (!projectPath) {
+      projectPath = await resolveProjectByHost(host);
+      if (projectPath) {
+        console.log(`[tsayru] auto-targeted ${host} → ${projectPath}`);
+      }
+    }
     const meta = await saveBatch({
       tasks,
       host,
       filterHost,
-      targetProjectPath,
+      targetProjectPath: projectPath,
       targetSessionId,
       targetTabUrl,
       targetTabTitle,
@@ -123,6 +135,18 @@ app.get("/tasks/list", async (req, res) => {
     res.json(list);
   } catch (err) {
     console.error("[tsayru] GET /tasks/list failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// Ids of done tasks across recent batches — polled by the extension sidebar
+// to strike through tasks Claude has completed (via MCP `tsayru_mark_done`).
+app.get("/tasks/done/recent", async (_req, res) => {
+  try {
+    const ids = await listDoneTaskIds();
+    res.json({ ok: true, ids });
+  } catch (err) {
+    console.error("[tsayru] GET /tasks/done/recent failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });

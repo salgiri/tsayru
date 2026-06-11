@@ -9,26 +9,37 @@
         k.startsWith("__reactInternalInstance$"),
     );
 
-  const reactComponentName = (fiber) => {
+  const fiberTypeName = (t) => {
+    if (typeof t === "function") {
+      const name = t.displayName || t.name;
+      if (name && name !== "_default" && name !== "Anonymous") return name;
+      return null;
+    }
+    if (t && typeof t === "object") {
+      const inner = t.render || t.type; // forwardRef / memo wrappers
+      if (typeof inner === "function") {
+        const name = inner.displayName || inner.name;
+        if (name) return name;
+      }
+      if (typeof t.displayName === "string") return t.displayName;
+    }
+    return null;
+  };
+
+  // Breadcrumbs: up to `max` component names walking outward from the clicked
+  // element (innermost first) — "SaveButton, SettingsPage, App". Gives Claude
+  // the location in the component tree, not just the leaf name.
+  const reactComponentChain = (fiber, max = 5) => {
+    const names = [];
     let node = fiber;
     let depth = 0;
-    while (node && depth < 30) {
-      const t = node.type;
-      if (typeof t === "function") {
-        const name = t.displayName || t.name;
-        if (name && name !== "_default" && name !== "Anonymous") return name;
-      } else if (t && typeof t === "object") {
-        const inner = t.render || t.type;
-        if (typeof inner === "function") {
-          const name = inner.displayName || inner.name;
-          if (name) return name;
-        }
-        if (typeof t.displayName === "string") return t.displayName;
-      }
+    while (node && depth < 60 && names.length < max) {
+      const name = fiberTypeName(node.type);
+      if (name && names[names.length - 1] !== name) names.push(name);
       node = node.return;
       depth++;
     }
-    return null;
+    return names;
   };
 
   // Walk up the fiber tree to find the closest node with a `_debugSource`.
@@ -88,6 +99,33 @@
     return null;
   };
 
+  // Vue 3 breadcrumbs via the parent chain of component instances.
+  const vueComponentChain = (instance, max = 5) => {
+    const names = [];
+    let c = instance;
+    let depth = 0;
+    while (c && depth < 30 && names.length < max) {
+      const t = c.type;
+      const name = (t && (t.name || t.__name)) || null;
+      if (name && names[names.length - 1] !== name) names.push(name);
+      c = c.parent;
+      depth++;
+    }
+    return names;
+  };
+
+  // Svelte dev builds stamp DOM nodes with `__svelte_meta.loc` ({file, line, column}).
+  const svelteMeta = (el) => {
+    let node = el;
+    let depth = 0;
+    while (node && depth < 30) {
+      if (node.__svelte_meta && node.__svelte_meta.loc) return node.__svelte_meta.loc;
+      node = node.parentElement;
+      depth++;
+    }
+    return null;
+  };
+
   const detect = (el) => {
     if (!el) return null;
 
@@ -95,10 +133,11 @@
     if (fiberKey) {
       const fiber = el[fiberKey];
       const ds = reactDebugSource(fiber) || reactDebugStackSource(fiber);
-      const componentName = reactComponentName(fiber);
+      const chain = reactComponentChain(fiber);
       return {
         framework: "react",
-        componentName,
+        componentName: chain[0] || null,
+        componentChain: chain.length > 1 ? chain : null,
         source: ds
           ? {
               file: ds.fileName || null,
@@ -112,9 +151,11 @@
     if (el.__vueParentComponent) {
       const c = el.__vueParentComponent;
       const t = c && c.type;
+      const chain = vueComponentChain(c);
       return {
         framework: "vue",
-        componentName: (t && (t.name || t.__name)) || null,
+        componentName: (t && (t.name || t.__name)) || chain[0] || null,
+        componentChain: chain.length > 1 ? chain : null,
         source: t && t.__file ? { file: t.__file, line: null, column: null } : null,
       };
     }
@@ -125,9 +166,43 @@
       return {
         framework: "vue",
         componentName: (opts && (opts.name || opts._componentTag)) || null,
+        componentChain: null,
         source: opts && opts.__file ? { file: opts.__file, line: null, column: null } : null,
       };
     }
+
+    const sv = svelteMeta(el);
+    if (sv && sv.file) {
+      const base = String(sv.file).split("/").pop() || null;
+      return {
+        framework: "svelte",
+        componentName: base ? base.replace(/\.svelte$/, "") : null,
+        componentChain: null,
+        source: { file: sv.file, line: sv.line ?? null, column: sv.column ?? null },
+      };
+    }
+
+    // Angular dev mode exposes the debug API on window.ng.
+    try {
+      if (window.ng && typeof window.ng.getComponent === "function") {
+        let node = el;
+        let comp = null;
+        let depth = 0;
+        while (node && !comp && depth < 30) {
+          comp = window.ng.getComponent(node);
+          if (!comp) node = node.parentElement;
+          depth++;
+        }
+        if (comp) {
+          return {
+            framework: "angular",
+            componentName: comp.constructor?.name || null,
+            componentChain: null,
+            source: null,
+          };
+        }
+      }
+    } catch {}
 
     return null;
   };

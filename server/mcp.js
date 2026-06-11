@@ -6,6 +6,7 @@
 //   tsayru_latest_tasks  -> latest batch as markdown
 //   tsayru_list_batches  -> recent batch metadata { limit? }
 //   tsayru_get_batch     -> specific batch as markdown { batchId }
+//   tsayru_mark_done     -> mark tasks completed { batchId?, taskIds?, indices? }
 //   tsayru_clear_inbox   -> wipe all batches; returns { deleted }
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,6 +18,7 @@ import {
   listBatches,
   readBatchMarkdown,
   clearInbox,
+  markTasksDone,
 } from "./lib/storage.js";
 
 const pkg = JSON.parse(
@@ -34,16 +36,20 @@ const textResult = (text, isError = false) => ({
 });
 
 // Filter batches by `targetProjectPath` matching the current process CWD.
-// NOTE: the extension does not currently stamp batches with a project path
-// (the local-session picker was removed), so in practice every batch is
-// "global" and the fallback branch serves it. The preference logic is kept
-// for a future project-targeting feature — it is correct whenever the field
-// is present.
+// The inbox auto-stamps batches by resolving the dev server's cwd from the
+// page's localhost port (server/lib/project.js). The match is prefix-tolerant
+// both ways: the dev server may run in a subfolder (monorepo `frontend/`)
+// while the Claude Code session sits at the repo root, or vice versa.
+const cwdMatches = (projectPath, cwd) =>
+  projectPath === cwd ||
+  projectPath.startsWith(cwd + "/") ||
+  cwd.startsWith(projectPath + "/");
+
 const pickLatestForCwd = async () => {
   const cwd = process.cwd();
   const all = await listBatches({ limit: 200 });
   const targeted = all.filter(
-    (b) => b.targetProjectPath && b.targetProjectPath === cwd,
+    (b) => b.targetProjectPath && cwdMatches(b.targetProjectPath, cwd),
   );
   if (targeted.length > 0) return targeted[0];
   const global = all.filter((b) => !b.targetProjectPath);
@@ -118,6 +124,63 @@ server.registerTool(
     } catch (err) {
       return textResult(
         `Failed to read batch ${batchId}: ${err.message || err}`,
+        true,
+      );
+    }
+  },
+);
+
+server.registerTool(
+  "tsayru_mark_done",
+  {
+    title: "Mark tsayru tasks done",
+    description:
+      "Mark tasks in a tsayru batch as completed after implementing them. " +
+      "The user's sidebar strikes them through automatically. Without " +
+      "batchId, targets the latest batch for this project. Without taskIds/" +
+      "indices, marks the whole batch.",
+    inputSchema: {
+      batchId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Batch identifier. Defaults to the latest batch for this project."),
+      taskIds: z
+        .array(z.string())
+        .optional()
+        .describe("Task ids (the `id` field in the batch JSON) to mark done."),
+      indices: z
+        .array(z.number().int().positive())
+        .optional()
+        .describe("1-based task numbers (as shown in the markdown) to mark done."),
+    },
+  },
+  async ({ batchId, taskIds, indices }) => {
+    let id = batchId;
+    if (!id) {
+      const latest = await pickLatestForCwd();
+      if (!latest) {
+        return textResult("Inbox has no batches to mark done.", true);
+      }
+      id = latest.batchId;
+    }
+    try {
+      const result = await markTasksDone(id, { taskIds, indices });
+      if (!result) {
+        return textResult(`Batch ${id} not found.`, true);
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Marked ${result.marked}/${result.total} task${result.total === 1 ? "" : "s"} done in batch ${id}.`,
+          },
+        ],
+        structuredContent: { batchId: id, ...result },
+      };
+    } catch (err) {
+      return textResult(
+        `Failed to mark batch ${id}: ${err.message || err}`,
         true,
       );
     }

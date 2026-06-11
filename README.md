@@ -21,10 +21,13 @@ When you're working with Claude on a frontend project, half the conversation is 
 | Feature | Detail |
 |---|---|
 | **Smart selectors** | `data-testid` / `id` / `aria-label` priority; falls back to verified-unique class chains. Won't silently point at the wrong element. Pierces open shadow roots (`host >>> inner` notation). |
-| **React fiber detection** | In dev mode, pulls `component: SaveButton` and `file: src/components/SaveButton.tsx:23`. React ≤18 via `_debugSource`; React 19 via a `_debugStack` fallback (works with Vite-style dev servers that serve real `/src/...` module paths). Vue 2/3 supported too. |
-| **Computed styles** | One-line summary: `color #2d4a3e · bg #f4f1ea · font 14px Inter 600 · pad 10px · r 6px · 320×40`. |
-| **Element screenshots** | Cropped to the clicked element with 8px padding, encoded as compact JPEG. UI hidden during capture so the extension's own chrome isn't in the shot. |
+| **Framework detection** | In dev mode, pulls `component: SaveButton (in App › SettingsPage)` and `file: src/components/SaveButton.tsx:23`. React ≤18 via `_debugSource`, React 19 via a `_debugStack` fallback, Vue 2/3, Svelte (`__svelte_meta`), Angular (`ng.getComponent`). |
+| **Rich element context** | Computed-styles summary (`color #2d4a3e · font 14px Inter 600 · 320×40`), a sanitized HTML snippet of the element, and the environment line (`1440×900 · dark · dpr 2`). |
+| **Element screenshots** | Cropped with 48px of surrounding context, the target outlined in red, encoded as compact JPEG. Elements scrolled out of view are brought in automatically. UI hidden during capture. |
 | **Three delivery channels** | Clipboard (copy and paste anywhere) · Direct push to claude.ai / claude.com web tabs (text + screenshots attached as image files, auto-submit) · MCP server for any local Claude Code session. |
+| **Project auto-targeting** | Batches from `localhost:<port>` are stamped with the dev server's project directory (resolved via `lsof`), so `tsayru_latest_tasks` in the matching Claude Code session picks up exactly its own tasks. |
+| **Task lifecycle** | Claude marks implemented tasks via the `tsayru_mark_done` MCP tool — the sidebar strikes them through automatically. Clearing is undoable for 8 seconds. |
+| **Quick-mark** | `Alt+click` an element to add it without the dialog — fill descriptions later via inline edit, or let Claude infer the change from the screenshot. |
 | **Per-host filtering** | Tabs in the sidebar split tasks across the projects you're working on. |
 | **Inline editing** | Edit any task's text without losing the captured selector / screenshot. |
 | **Hover preview** | Hovering a task in the sidebar re-highlights the original element on the page. |
@@ -111,9 +114,10 @@ Restart Claude Code. You now have four tools available:
 
 | Tool | What it does |
 |---|---|
-| `tsayru_latest_tasks` | Returns the most recent batch targeted at the current project (`process.cwd()`), with global batches as fallback. |
+| `tsayru_latest_tasks` | Returns the most recent batch targeted at the current project (`process.cwd()`, prefix-tolerant for monorepos), with global batches as fallback. |
 | `tsayru_list_batches` | Lists recent batch metadata (newest first). |
 | `tsayru_get_batch` | Returns a specific batch by id, rendered as markdown. |
+| `tsayru_mark_done` | Marks tasks completed (whole batch, by ids, or by 1-based numbers). The sidebar strikes them through within ~10s. |
 | `tsayru_clear_inbox` | Wipes every saved batch. |
 
 Now in any Claude Code chat, you can say *"check tsayru for new tasks"* and Claude will pull them — including the screenshots — automatically.
@@ -235,7 +239,7 @@ Tested on Chrome, Arc, and Brave (anything Chromium ≥ 111). Not compatible wit
 
 ## Roadmap
 
-- Annotation overlays on screenshots (arrows, highlights drawn on the captured image)
+- ~~Annotation overlays on screenshots~~ — done in v0.14.0 (automatic red outline + context)
 - Tags / colors for grouping a large batch by feature
 - Cross-machine batch sync
 - Team mode: shared MCP server so collaborators can submit into the same inbox

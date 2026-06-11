@@ -183,6 +183,55 @@ export const listBatches = async ({ limit = 50 } = {}) => {
   return out;
 };
 
+// Mark tasks in a batch as done. `taskIds` narrows by task id, `indices`
+// (1-based, matching the markdown numbering) narrows by position; with
+// neither, the whole batch is marked. Rewrites both tasks.json and tasks.md.
+// Returns { marked, total } or null if the batch doesn't exist.
+export const markTasksDone = async (batchId, { taskIds, indices } = {}) => {
+  const envelope = await readBatch(batchId);
+  if (!envelope || !Array.isArray(envelope.tasks)) return null;
+  const idSet = Array.isArray(taskIds) && taskIds.length ? new Set(taskIds) : null;
+  const idxSet =
+    Array.isArray(indices) && indices.length ? new Set(indices) : null;
+  const doneAt = new Date().toISOString();
+  let marked = 0;
+  envelope.tasks.forEach((t, i) => {
+    if (!t || typeof t !== "object") return;
+    const byId = idSet ? t.id && idSet.has(t.id) : false;
+    const byIdx = idxSet ? idxSet.has(i + 1) : false;
+    const all = !idSet && !idxSet;
+    if ((all || byId || byIdx) && !t.done) {
+      t.done = true;
+      t.doneAt = doneAt;
+      marked += 1;
+    }
+  });
+  const dir = batchDir(batchId);
+  await fs.writeFile(
+    path.join(dir, "tasks.json"),
+    JSON.stringify(envelope, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(path.join(dir, "tasks.md"), formatBatch(envelope), "utf8");
+  return { marked, total: envelope.tasks.length };
+};
+
+// Ids of done tasks across the most recent batches — the extension polls this
+// to strike through completed tasks in the sidebar.
+export const listDoneTaskIds = async ({ batchLimit = 20 } = {}) => {
+  const recent = await listBatches({ limit: batchLimit });
+  const ids = [];
+  for (const meta of recent) {
+    try {
+      const env = await readBatch(meta.batchId);
+      for (const t of env?.tasks || []) {
+        if (t && t.done && typeof t.id === "string") ids.push(t.id);
+      }
+    } catch {}
+  }
+  return [...new Set(ids)];
+};
+
 // Remove a single batch folder. Returns true if removed, false if missing.
 // `force: false` so ENOENT actually throws and we can return false honestly.
 export const deleteBatch = async (batchId) => {

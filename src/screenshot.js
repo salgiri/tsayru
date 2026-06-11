@@ -4,7 +4,12 @@
 
 import { refs } from "./core.js";
 
-const PADDING = 8; // CSS px around captured element
+// Generous context around the element (48px instead of the old 8): Claude
+// understands "this button" far better when neighboring UI is visible. The
+// target itself is outlined in red (below) so the extra context can't cause
+// ambiguity about which element is meant.
+const PADDING = 48; // CSS px around captured element
+const OUTLINE_COLOR = "#ff3b30";
 const MAX_WIDTH = 800; // CSS px — resize down if cropped wider than this
 // JPEG instead of PNG: 3–10× smaller, which protects the chrome.storage quota
 // and keeps web-chat attachments light. Screenshots of UI don't need lossless.
@@ -92,6 +97,17 @@ const cropToDataUrl = (img, rect) => {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, outW, outH);
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+
+  // Outline the target element so the padded context can't be mistaken for it.
+  const outScale = outW / sw; // device px -> output px
+  const ex = (rect.left * dpr - sx) * outScale;
+  const ey = (rect.top * dpr - sy) * outScale;
+  const ew = rect.width * dpr * outScale;
+  const eh = rect.height * dpr * outScale;
+  ctx.strokeStyle = OUTLINE_COLOR;
+  ctx.lineWidth = Math.max(2, Math.round(2 * dpr * outScale));
+  ctx.strokeRect(ex, ey, ew, eh);
+
   return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
 };
 
@@ -127,8 +143,25 @@ const withHiddenUI = async (fn) => {
 // just silently saved without a screenshot (e.g. no activeTab on *.test hosts).
 export const captureElement = async (target) => {
   if (!(target instanceof Element)) return null;
-  const rect = target.getBoundingClientRect();
+  let rect = target.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return null;
+  // Element partially outside the viewport would be cropped mid-element.
+  // `block: "nearest"` scrolls the minimum needed to fit it, which is also
+  // where the user's attention already is — acceptable side effect.
+  if (
+    rect.top < 0 ||
+    rect.left < 0 ||
+    rect.bottom > window.innerHeight ||
+    rect.right > window.innerWidth
+  ) {
+    try {
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } catch {}
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(r)),
+    );
+    rect = target.getBoundingClientRect();
+  }
   return withHiddenUI(async () => {
     const { dataUrl, error } = await requestFullCapture();
     if (!dataUrl) {

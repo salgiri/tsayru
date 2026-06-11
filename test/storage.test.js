@@ -82,6 +82,39 @@ describe("storage", () => {
     expect(list.length).toBeLessThanOrEqual(5);
   });
 
+  it("markTasksDone by ids, indices, and all; listDoneTaskIds picks them up", async () => {
+    await storage.clearInbox();
+    const tasks = [
+      { id: "id-a", text: "a", label: "A", selector: ".a", url: "https://x.test/" },
+      { id: "id-b", text: "b", label: "B", selector: ".b", url: "https://x.test/" },
+      { id: "id-c", text: "c", label: "C", selector: ".c", url: "https://x.test/" },
+    ];
+    const meta = await storage.saveBatch({ tasks });
+
+    // by id
+    let r = await storage.markTasksDone(meta.batchId, { taskIds: ["id-b"] });
+    expect(r).toEqual({ marked: 1, total: 3 });
+    // by 1-based index
+    r = await storage.markTasksDone(meta.batchId, { indices: [1] });
+    expect(r).toEqual({ marked: 1, total: 3 });
+    // remaining (all)
+    r = await storage.markTasksDone(meta.batchId);
+    expect(r).toEqual({ marked: 1, total: 3 });
+
+    const env = await storage.readBatch(meta.batchId);
+    expect(env.tasks.every((t) => t.done)).toBe(true);
+
+    // markdown re-rendered with checkmarks
+    const md = await storage.readBatchMarkdown(meta.batchId);
+    expect(md).toContain("✅");
+
+    const ids = await storage.listDoneTaskIds();
+    expect(ids.sort()).toEqual(["id-a", "id-b", "id-c"]);
+
+    // missing batch -> null
+    expect(await storage.markTasksDone("2099-01-01T00-00-00-000Z-ffffff")).toBeNull();
+  });
+
   it("clearInbox wipes everything and reports the count", async () => {
     await storage.saveBatch({ tasks: sampleTasks });
     const deleted = await storage.clearInbox();

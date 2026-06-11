@@ -46,11 +46,14 @@
   var filterByHost = (tasks, filterHost) => filterHost ? (tasks || []).filter((t) => safeHost(t.url) === filterHost) : tasks || [];
   var taskLines = (t, displayIndex, opts = {}) => {
     const mode = opts.screenshotMode || "note";
-    const lines = [`## ${displayIndex}. ${t.label}`];
+    const check = t.done ? "\u2705 " : "";
+    const lines = [`## ${displayIndex}. ${check}${t.label}`];
     lines.push(`- selector: \`${t.selector}\``);
     const fw = t.framework;
     if (fw && fw.componentName) {
-      lines.push(`- component: \`${fw.componentName}\``);
+      const chain = Array.isArray(fw.componentChain) ? fw.componentChain : null;
+      const crumbs = chain && chain.length > 1 ? ` (in ${chain.slice(1).reverse().join(" \u203A ")})` : "";
+      lines.push(`- component: \`${fw.componentName}\`${crumbs}`);
     }
     if (fw && fw.source && fw.source.file) {
       const loc = fw.source.line ? `${fw.source.file}:${fw.source.line}` : fw.source.file;
@@ -63,6 +66,15 @@
     if (styles) {
       lines.push(`- styles: ${styles}`);
     }
+    if (t.html) {
+      lines.push(`- html: \`${t.html}\``);
+    }
+    if (t.env && t.env.viewport) {
+      const envParts = [t.env.viewport];
+      if (t.env.scheme) envParts.push(t.env.scheme);
+      if (t.env.dpr && t.env.dpr !== 1) envParts.push(`dpr ${t.env.dpr}`);
+      lines.push(`- env: ${envParts.join(" \xB7 ")}`);
+    }
     lines.push(`- url: ${t.url}`);
     if (t.screenshot && mode === "attached") {
       lines.push(`- screenshot: attached image #${opts.attachmentNum || displayIndex}`);
@@ -70,7 +82,9 @@
       lines.push(`- screenshot: \u2713 captured (image data omitted from clipboard copy)`);
     }
     lines.push("");
-    lines.push(t.text);
+    lines.push(
+      t.text || "(no description provided \u2014 infer the needed change from the screenshot and element context)"
+    );
     if (t.screenshot && mode === "inline") {
       lines.push("");
       lines.push(`![${t.label}](${t.screenshot})`);
@@ -205,6 +219,29 @@
         resolve(null);
       }, 200);
     });
+  };
+  var snapshotHtml = (target, maxLen = 300) => {
+    if (!(target instanceof Element)) return null;
+    try {
+      let html = target.outerHTML.replace(/\s+/g, " ").trim();
+      html = html.replace(/(src|href|srcset)="data:[^"]{40,}"/g, '$1="data:\u2026"');
+      html = html.replace(/`/g, "'");
+      if (html.length > maxLen) html = html.slice(0, maxLen - 1) + "\u2026";
+      return html;
+    } catch {
+      return null;
+    }
+  };
+  var snapshotEnv = () => {
+    try {
+      return {
+        viewport: `${window.innerWidth}\xD7${window.innerHeight}`,
+        dpr: window.devicePixelRatio || 1,
+        scheme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+      };
+    } catch {
+      return null;
+    }
   };
   var snapshotComputedStyles = (target) => {
     if (!(target instanceof Element)) return null;
@@ -354,7 +391,8 @@
   };
 
   // src/screenshot.js
-  var PADDING = 8;
+  var PADDING = 48;
+  var OUTLINE_COLOR = "#ff3b30";
   var MAX_WIDTH = 800;
   var JPEG_QUALITY = 0.85;
   var requestFullCapture = () => new Promise((resolve) => {
@@ -422,6 +460,14 @@
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, outW, outH);
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+    const outScale = outW / sw;
+    const ex = (rect.left * dpr - sx) * outScale;
+    const ey = (rect.top * dpr - sy) * outScale;
+    const ew = rect.width * dpr * outScale;
+    const eh = rect.height * dpr * outScale;
+    ctx.strokeStyle = OUTLINE_COLOR;
+    ctx.lineWidth = Math.max(2, Math.round(2 * dpr * outScale));
+    ctx.strokeRect(ex, ey, ew, eh);
     return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
   };
   var withHiddenUI = async (fn) => {
@@ -447,8 +493,18 @@
   };
   var captureElement = async (target) => {
     if (!(target instanceof Element)) return null;
-    const rect = target.getBoundingClientRect();
+    let rect = target.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
+    if (rect.top < 0 || rect.left < 0 || rect.bottom > window.innerHeight || rect.right > window.innerWidth) {
+      try {
+        target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch {
+      }
+      await new Promise(
+        (r) => requestAnimationFrame(() => requestAnimationFrame(r))
+      );
+      rect = target.getBoundingClientRect();
+    }
     return withHiddenUI(async () => {
       const { dataUrl, error } = await requestFullCapture();
       if (!dataUrl) {
@@ -631,6 +687,22 @@
     document.documentElement.appendChild(tip);
     setTimeout(() => tip.remove(), 1400);
   };
+  var flashAction = (msg, actionLabel, onAction, ttl = 8e3) => {
+    const btn = el(
+      "button",
+      {
+        class: "tsayru-flash-btn",
+        onClick: () => {
+          tip.remove();
+          onAction();
+        }
+      },
+      actionLabel
+    );
+    const tip = el("div", { class: "tsayru-flash tsayru-flash-action" }, msg, btn);
+    document.documentElement.appendChild(tip);
+    setTimeout(() => tip.remove(), ttl);
+  };
   window.addEventListener("tsayru-persist-error", (e) => {
     flash(e?.detail?.message || "save error");
   });
@@ -661,7 +733,8 @@
   var copyOne = async (task, displayIndex) => {
     await writeClipboard(formatTask(task, displayIndex), "task copied");
   };
-  var SERVER_URL = "http://127.0.0.1:7777/tasks";
+  var SERVER_BASE = "http://127.0.0.1:7777";
+  var SERVER_URL = `${SERVER_BASE}/tasks`;
   var isContextInvalidated2 = (err) => /context invalidated|Extension context/i.test(String(err || ""));
   var postBatch = (tasks, target) => new Promise((resolve) => {
     const payload = {
@@ -741,6 +814,42 @@
     if (target === null) return;
     sendBatch(tasks, target);
   };
+  var pollDoneStatus = () => {
+    if (!refs.sidebar || refs.sidebar.classList.contains("tsayru-hidden")) return;
+    if (!state.tasks.some((t) => t.id && !t.done)) return;
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "TSAYRU_SEND",
+          url: `${SERVER_BASE}/tasks/done/recent`,
+          method: "GET"
+        },
+        (resp) => {
+          void chrome.runtime.lastError;
+          const ids = resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
+          if (!ids || ids.length === 0) return;
+          const doneIds = new Set(ids);
+          let changed = false;
+          for (const t of state.tasks) {
+            if (t.id && !t.done && doneIds.has(t.id)) {
+              t.done = true;
+              changed = true;
+            }
+          }
+          if (changed) {
+            persist();
+            renderSidebar();
+          }
+        }
+      );
+    } catch {
+    }
+  };
+  var donePollTimer = null;
+  var ensureDonePolling = () => {
+    if (donePollTimer) return;
+    donePollTimer = setInterval(pollDoneStatus, 1e4);
+  };
   var onTaskHover = (selector) => {
     if (state.inspecting) return;
     if (!selector) return;
@@ -754,10 +863,8 @@
   var clearTasks = () => {
     if (state.tasks.length === 0) return;
     const fh = state.filterHost;
-    const target = fh ? state.tasks.filter((t) => safeHost(t.url) === fh) : state.tasks;
-    if (target.length === 0) return;
-    const msg = fh ? `Clear ${target.length} task${plural(target.length)} for ${fh}?` : "Clear all tasks?";
-    if (!confirm(msg)) return;
+    const removed = fh ? state.tasks.filter((t) => safeHost(t.url) === fh) : state.tasks.slice();
+    if (removed.length === 0) return;
     if (fh) {
       state.tasks = state.tasks.filter((t) => safeHost(t.url) !== fh);
     } else {
@@ -766,6 +873,15 @@
     state.editingTaskIndex = null;
     persist();
     renderSidebar();
+    flashAction(
+      `cleared ${removed.length} task${plural(removed.length)}`,
+      "undo",
+      () => {
+        state.tasks.push(...removed);
+        persist();
+        renderSidebar();
+      }
+    );
   };
   var renderTask = (task, idx, displayNum) => {
     if (state.editingTaskIndex === idx) {
@@ -833,7 +949,7 @@
     return el(
       "div",
       {
-        class: "tsayru-task",
+        class: "tsayru-task" + (task.done ? " tsayru-task-done" : ""),
         onMouseEnter: () => onTaskHover(task.selector),
         onMouseLeave: onTaskLeave
       },
@@ -882,7 +998,13 @@
         )
       ),
       el("div", { class: "tsayru-task-sel" }, task.selector),
-      el("div", { class: "tsayru-task-text" }, task.text)
+      el(
+        "div",
+        {
+          class: "tsayru-task-text" + (task.text ? "" : " tsayru-task-text-empty")
+        },
+        task.text || "no description \u2014 click \u270E to add"
+      )
     );
   };
   var renderSidebar = () => {
@@ -993,6 +1115,7 @@
       el("div", { class: "tsayru-list" })
     );
     document.documentElement.appendChild(refs.sidebar);
+    ensureDonePolling();
     renderSidebar();
   };
 
@@ -1008,7 +1131,37 @@
     if (ta && ta.value.trim() && !confirm("Discard this task draft?")) return;
     closeModal();
   };
-  var submitTask = async (selector, label, frameworkPromise, computedStyles, screenshot) => {
+  var addTask = async (selector, label, text, frameworkPromise, ctx) => {
+    const framework = await Promise.race([
+      frameworkPromise || Promise.resolve(null),
+      new Promise((resolve) => setTimeout(() => resolve(null), 250))
+    ]);
+    state.tasks.push({
+      // Stable id — the done-status sync from the server matches on it.
+      id: crypto.randomUUID(),
+      selector,
+      label,
+      text,
+      url: location.href,
+      framework: framework || null,
+      computedStyles: ctx?.computedStyles || null,
+      screenshot: ctx?.screenshot || null,
+      html: ctx?.html || null,
+      env: ctx?.env || null,
+      done: false,
+      addedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    await persist();
+    renderSidebar();
+    window.dispatchEvent(new CustomEvent("tsayru-task-added"));
+  };
+  var quickAddTask = async (target, ctx) => {
+    const selector = buildSelector(target);
+    const label = shortLabel(target);
+    const frameworkPromise = detectFramework(target).catch(() => null);
+    await addTask(selector, label, "", frameworkPromise, ctx);
+  };
+  var submitTask = async (selector, label, frameworkPromise, ctx) => {
     if (!refs.modal) return;
     if (refs.modal.__submitting) return;
     refs.modal.__submitting = true;
@@ -1019,30 +1172,15 @@
       ta.focus();
       return;
     }
-    const framework = await Promise.race([
-      frameworkPromise || Promise.resolve(null),
-      new Promise((resolve) => setTimeout(() => resolve(null), 250))
-    ]);
-    state.tasks.push({
-      selector,
-      label,
-      text,
-      url: location.href,
-      framework: framework || null,
-      computedStyles: computedStyles || null,
-      screenshot: screenshot || null,
-      addedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    await persist();
-    renderSidebar();
+    await addTask(selector, label, text, frameworkPromise, ctx);
     closeModal();
-    window.dispatchEvent(new CustomEvent("tsayru-task-added"));
   };
-  var openModal = (target, computedStyles, screenshot) => {
+  var openModal = (target, ctx = {}) => {
     closeModal();
     const selector = buildSelector(target);
     const label = shortLabel(target);
     const frameworkPromise = detectFramework(target).catch(() => null);
+    const screenshot = ctx.screenshot || null;
     refs.modal = el(
       "div",
       {
@@ -1088,7 +1226,7 @@
             "button",
             {
               class: "tsayru-modal-submit",
-              onClick: () => submitTask(selector, label, frameworkPromise, computedStyles, screenshot)
+              onClick: () => submitTask(selector, label, frameworkPromise, ctx)
             },
             "Add (Enter)"
           )
@@ -1101,7 +1239,7 @@
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        submitTask(selector, label, frameworkPromise, computedStyles, screenshot);
+        submitTask(selector, label, frameworkPromise, ctx);
       } else if (e.key === "Escape") {
         e.preventDefault();
         requestClose();
@@ -1184,11 +1322,20 @@
     const target = deepElementFromPoint(e.clientX, e.clientY);
     if (!target) return;
     if (isOurChrome(target)) return;
-    const computedStyles = snapshotComputedStyles(target);
+    const ctx = {
+      computedStyles: snapshotComputedStyles(target),
+      html: snapshotHtml(target),
+      env: snapshotEnv()
+    };
+    const quick = e.altKey;
     setInspecting(false);
     moveHighlight(null);
-    const screenshot = await captureElement(target);
-    openModal(target, computedStyles, screenshot);
+    ctx.screenshot = await captureElement(target);
+    if (quick) {
+      await quickAddTask(target, ctx);
+      return;
+    }
+    openModal(target, ctx);
   };
   var onKeyDown = (e) => {
     if (e.key === "Escape" && state.inspecting) {

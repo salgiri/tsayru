@@ -102,6 +102,57 @@ describe("formatTasks", () => {
     expect(md).toContain("- file: `src/SaveButton.tsx:23`");
   });
 
+  it("renders component breadcrumbs outermost-first", () => {
+    const md = formatTasks(
+      [
+        task({
+          framework: {
+            framework: "react",
+            componentName: "SaveButton",
+            componentChain: ["SaveButton", "SettingsPage", "App"],
+            source: null,
+          },
+        }),
+      ],
+      null,
+    );
+    expect(md).toContain("- component: `SaveButton` (in App › SettingsPage)");
+  });
+
+  it("renders html snippet and env line", () => {
+    const md = formatTasks(
+      [
+        task({
+          html: '<button class="btn">Save</button>',
+          env: { viewport: "1440×900", scheme: "dark", dpr: 2 },
+        }),
+      ],
+      null,
+    );
+    expect(md).toContain('- html: `<button class="btn">Save</button>`');
+    expect(md).toContain("- env: 1440×900 · dark · dpr 2");
+  });
+
+  it("omits dpr 1 from env and skips missing html", () => {
+    const md = formatTasks(
+      [task({ env: { viewport: "1280×800", scheme: "light", dpr: 1 } })],
+      null,
+    );
+    expect(md).toContain("- env: 1280×800 · light");
+    expect(md).not.toContain("dpr");
+    expect(md).not.toContain("- html:");
+  });
+
+  it("marks done tasks and substitutes text for quick-marked ones", () => {
+    const md = formatTasks(
+      [task({ done: true }), task({ label: "Quick", text: "" })],
+      null,
+    );
+    expect(md).toContain("## 1. ✅ Save");
+    expect(md).toContain("## 2. Quick");
+    expect(md).toContain("(no description provided");
+  });
+
   describe("screenshot modes", () => {
     const shot = task({ screenshot: "data:image/jpeg;base64,AAAA" });
 

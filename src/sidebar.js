@@ -18,6 +18,24 @@ const flash = (msg) => {
   setTimeout(() => tip.remove(), 1400);
 };
 
+// Toast with a single action button (used for "cleared · undo").
+const flashAction = (msg, actionLabel, onAction, ttl = 8000) => {
+  const btn = el(
+    "button",
+    {
+      class: "tsayru-flash-btn",
+      onClick: () => {
+        tip.remove();
+        onAction();
+      },
+    },
+    actionLabel,
+  );
+  const tip = el("div", { class: "tsayru-flash tsayru-flash-action" }, msg, btn);
+  document.documentElement.appendChild(tip);
+  setTimeout(() => tip.remove(), ttl);
+};
+
 // Surface persist quota / I/O errors from core.js (avoids import cycle).
 window.addEventListener("tsayru-persist-error", (e) => {
   flash(e?.detail?.message || "save error");
@@ -59,7 +77,8 @@ const copyOne = async (task, displayIndex) => {
   await writeClipboard(formatTask(task, displayIndex), "task copied");
 };
 
-const SERVER_URL = "http://127.0.0.1:7777/tasks";
+const SERVER_BASE = "http://127.0.0.1:7777";
+const SERVER_URL = `${SERVER_BASE}/tasks`;
 
 const isContextInvalidated = (err) =>
   /context invalidated|Extension context/i.test(String(err || ""));
@@ -169,6 +188,48 @@ const sendToServer = async () => {
   sendBatch(tasks, target);
 };
 
+// Done-status sync: Claude marks tasks done via the MCP tool `tsayru_mark_done`;
+// the server exposes the ids; we poll while the sidebar is visible and strike
+// through matching tasks. Silent when the server is down — this is an
+// optional enhancement, not a dependency.
+const pollDoneStatus = () => {
+  if (!refs.sidebar || refs.sidebar.classList.contains("tsayru-hidden")) return;
+  if (!state.tasks.some((t) => t.id && !t.done)) return;
+  try {
+    chrome.runtime.sendMessage(
+      {
+        type: "TSAYRU_SEND",
+        url: `${SERVER_BASE}/tasks/done/recent`,
+        method: "GET",
+      },
+      (resp) => {
+        void chrome.runtime.lastError;
+        const ids =
+          resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
+        if (!ids || ids.length === 0) return;
+        const doneIds = new Set(ids);
+        let changed = false;
+        for (const t of state.tasks) {
+          if (t.id && !t.done && doneIds.has(t.id)) {
+            t.done = true;
+            changed = true;
+          }
+        }
+        if (changed) {
+          persist();
+          renderSidebar();
+        }
+      },
+    );
+  } catch {}
+};
+
+let donePollTimer = null;
+const ensureDonePolling = () => {
+  if (donePollTimer) return;
+  donePollTimer = setInterval(pollDoneStatus, 10000);
+};
+
 // Hover-preview: highlight the original element on the page when user hovers a task in the sidebar.
 // Skipped while inspector is active — there the page-mouse-tracker takes precedence.
 const onTaskHover = (selector) => {
@@ -184,17 +245,15 @@ const onTaskLeave = () => {
   moveHighlight(null);
 };
 
+// Clear with undo instead of a blocking confirm: the snapshot of removed
+// tasks lives until the toast expires (8s), then it's gone for real.
 const clearTasks = () => {
   if (state.tasks.length === 0) return;
   const fh = state.filterHost;
-  const target = fh
+  const removed = fh
     ? state.tasks.filter((t) => safeHost(t.url) === fh)
-    : state.tasks;
-  if (target.length === 0) return;
-  const msg = fh
-    ? `Clear ${target.length} task${plural(target.length)} for ${fh}?`
-    : "Clear all tasks?";
-  if (!confirm(msg)) return;
+    : state.tasks.slice();
+  if (removed.length === 0) return;
   if (fh) {
     state.tasks = state.tasks.filter((t) => safeHost(t.url) !== fh);
   } else {
@@ -203,6 +262,15 @@ const clearTasks = () => {
   state.editingTaskIndex = null;
   persist();
   renderSidebar();
+  flashAction(
+    `cleared ${removed.length} task${plural(removed.length)}`,
+    "undo",
+    () => {
+      state.tasks.push(...removed);
+      persist();
+      renderSidebar();
+    },
+  );
 };
 
 const renderTask = (task, idx, displayNum) => {
@@ -274,7 +342,7 @@ const renderTask = (task, idx, displayNum) => {
   return el(
     "div",
     {
-      class: "tsayru-task",
+      class: "tsayru-task" + (task.done ? " tsayru-task-done" : ""),
       onMouseEnter: () => onTaskHover(task.selector),
       onMouseLeave: onTaskLeave,
     },
@@ -326,7 +394,14 @@ const renderTask = (task, idx, displayNum) => {
       ),
     ),
     el("div", { class: "tsayru-task-sel" }, task.selector),
-    el("div", { class: "tsayru-task-text" }, task.text),
+    el(
+      "div",
+      {
+        class:
+          "tsayru-task-text" + (task.text ? "" : " tsayru-task-text-empty"),
+      },
+      task.text || "no description — click ✎ to add",
+    ),
   );
 };
 
@@ -458,5 +533,6 @@ export const ensureSidebar = () => {
     el("div", { class: "tsayru-list" }),
   );
   document.documentElement.appendChild(refs.sidebar);
+  ensureDonePolling();
   renderSidebar();
 };
