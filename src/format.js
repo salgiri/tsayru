@@ -106,6 +106,19 @@ const taskLines = (t, displayIndex, opts = {}) => {
     lines.push(`- env: ${envParts.join(" · ")}`);
   }
   lines.push(`- url: ${t.url}`);
+  if (Array.isArray(t.pageErrors) && t.pageErrors.length) {
+    lines.push(`- recent page errors:`);
+    for (const er of t.pageErrors.slice(0, 5)) {
+      const meta = [
+        er.count > 1 ? `×${er.count}` : null,
+        er.source || null,
+        er.ago != null ? `${er.ago}s ago` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      lines.push(`  - \`${er.message}\`${meta ? ` (${meta})` : ""}`);
+    }
+  }
   if (t.screenshot && mode === "attached") {
     lines.push(`- screenshot: attached image #${opts.attachmentNum || displayIndex}`);
   } else if (t.screenshot && mode === "note") {

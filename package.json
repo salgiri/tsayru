@@ -1,13 +1,14 @@
 {
   "name": "tsayru-extension",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "private": true,
   "type": "module",
   "description": "Build pipeline for the tsayru Chrome extension. The extension itself lives in extension/.",
   "scripts": {
     "build": "esbuild src/index.js --bundle --outfile=extension/content.js --format=iife --target=chrome111 --legal-comments=none",
     "watch": "esbuild src/index.js --bundle --outfile=extension/content.js --format=iife --target=chrome111 --legal-comments=none --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "npm run build && mkdir -p dist && cd extension && zip -rqX \"../dist/tsayru-$npm_package_version.zip\" . -x '.DS_Store' '*/.DS_Store' && echo \"dist/tsayru-$npm_package_version.zip\""
   },
   "devDependencies": {
     "esbuild": "^0.24.0",

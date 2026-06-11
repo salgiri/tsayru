@@ -2,6 +2,7 @@
 // Re-injection guard prevents duplicate listeners when the extension is reloaded.
 
 import { isDevHost, restore } from "./core.js";
+import { initErrorCapture } from "./errors.js";
 import { initEventListeners, toggleSidebar } from "./inspector.js";
 import { ensureSidebar } from "./sidebar.js";
 
@@ -11,6 +12,7 @@ if (window.__tsayruInjected) {
   window.__tsayruInjected = true;
 
   initEventListeners();
+  initErrorCapture();
 
   chrome.runtime?.onMessage?.addListener((msg) => {
     if (msg?.type === "TSAYRU_TOGGLE") {

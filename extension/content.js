@@ -76,6 +76,17 @@
       lines.push(`- env: ${envParts.join(" \xB7 ")}`);
     }
     lines.push(`- url: ${t.url}`);
+    if (Array.isArray(t.pageErrors) && t.pageErrors.length) {
+      lines.push(`- recent page errors:`);
+      for (const er of t.pageErrors.slice(0, 5)) {
+        const meta = [
+          er.count > 1 ? `\xD7${er.count}` : null,
+          er.source || null,
+          er.ago != null ? `${er.ago}s ago` : null
+        ].filter(Boolean).join(", ");
+        lines.push(`  - \`${er.message}\`${meta ? ` (${meta})` : ""}`);
+      }
+    }
     if (t.screenshot && mode === "attached") {
       lines.push(`- screenshot: attached image #${opts.attachmentNum || displayIndex}`);
     } else if (t.screenshot && mode === "note") {
@@ -175,6 +186,42 @@
     }
   };
 
+  // src/errors.js
+  var MAX_ERRORS = 10;
+  var buffer = [];
+  var shortSource = (filename, lineno) => {
+    if (!filename) return null;
+    const tail = String(filename).split("/").slice(-2).join("/");
+    return lineno ? `${tail}:${lineno}` : tail;
+  };
+  var push = (message, source) => {
+    const msg = String(message || "").replace(/`/g, "'").slice(0, 200);
+    if (!msg) return;
+    const last = buffer[buffer.length - 1];
+    if (last && last.message === msg) {
+      last.count = (last.count || 1) + 1;
+      last.at = Date.now();
+      return;
+    }
+    buffer.push({ message: msg, source: source || null, count: 1, at: Date.now() });
+    if (buffer.length > MAX_ERRORS) buffer.shift();
+  };
+  var initErrorCapture = () => {
+    window.addEventListener("error", (e) => {
+      if (!e.message) return;
+      push(e.message, shortSource(e.filename, e.lineno));
+    });
+  };
+  var recentContentErrors = (limit = 5) => {
+    const now = Date.now();
+    return buffer.slice(-limit).map((e) => ({
+      message: e.message,
+      source: e.source,
+      count: e.count || 1,
+      ago: Math.round((now - e.at) / 1e3)
+    }));
+  };
+
   // src/framework.js
   var mainWorldReady = null;
   var ensureMainWorld = () => {
@@ -218,6 +265,30 @@
         window.removeEventListener("message", onResp);
         resolve(null);
       }, 200);
+    });
+  };
+  var collectPageErrors = async () => {
+    await ensureMainWorld();
+    return new Promise((resolve) => {
+      const requestId = Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+      const onResp = (e) => {
+        if (e.source !== window) return;
+        const data = e.data;
+        if (!data || data.type !== "TSAYRU_ERRORS_RESPONSE" || data.requestId !== requestId)
+          return;
+        window.removeEventListener("message", onResp);
+        clearTimeout(timer);
+        resolve(Array.isArray(data.errors) ? data.errors : []);
+      };
+      window.addEventListener("message", onResp);
+      window.postMessage(
+        { type: "TSAYRU_ERRORS_REQUEST", requestId },
+        location.origin || "*"
+      );
+      const timer = setTimeout(() => {
+        window.removeEventListener("message", onResp);
+        resolve([]);
+      }, 150);
     });
   };
   var snapshotHtml = (target, maxLen = 300) => {
@@ -1148,6 +1219,7 @@
       screenshot: ctx?.screenshot || null,
       html: ctx?.html || null,
       env: ctx?.env || null,
+      pageErrors: ctx?.pageErrors?.length ? ctx.pageErrors : null,
       done: false,
       addedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
@@ -1330,7 +1402,17 @@
     const quick = e.altKey;
     setInspecting(false);
     moveHighlight(null);
-    ctx.screenshot = await captureElement(target);
+    const [screenshot, mainErrors] = await Promise.all([
+      captureElement(target),
+      collectPageErrors().catch(() => [])
+    ]);
+    ctx.screenshot = screenshot;
+    const seen = /* @__PURE__ */ new Set();
+    ctx.pageErrors = [...mainErrors, ...recentContentErrors()].filter((er) => {
+      if (!er?.message || seen.has(er.message)) return false;
+      seen.add(er.message);
+      return true;
+    }).slice(0, 5);
     if (quick) {
       await quickAddTask(target, ctx);
       return;
@@ -1368,6 +1450,7 @@
   } else {
     window.__tsayruInjected = true;
     initEventListeners();
+    initErrorCapture();
     chrome.runtime?.onMessage?.addListener((msg) => {
       if (msg?.type === "TSAYRU_TOGGLE") {
         toggleSidebar();

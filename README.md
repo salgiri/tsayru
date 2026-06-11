@@ -23,6 +23,7 @@ When you're working with Claude on a frontend project, half the conversation is 
 | **Smart selectors** | `data-testid` / `id` / `aria-label` priority; falls back to verified-unique class chains. Won't silently point at the wrong element. Pierces open shadow roots (`host >>> inner` notation). |
 | **Framework detection** | In dev mode, pulls `component: SaveButton (in App › SettingsPage)` and `file: src/components/SaveButton.tsx:23`. React ≤18 via `_debugSource`, React 19 via a `_debugStack` fallback, Vue 2/3, Svelte (`__svelte_meta`), Angular (`ng.getComponent`). |
 | **Rich element context** | Computed-styles summary (`color #2d4a3e · font 14px Inter 600 · 320×40`), a sanitized HTML snippet of the element, and the environment line (`1440×900 · dark · dpr 2`). |
+| **Page-error capture** | Recent uncaught errors, unhandled rejections, and `console.error` output (React dev warnings included) travel with each task: `` `TypeError: x is undefined` (×3, src/App.tsx:42, 12s ago) ``. Claude sees the crash, not just the symptom. |
 | **Element screenshots** | Cropped with 48px of surrounding context, the target outlined in red, encoded as compact JPEG. Elements scrolled out of view are brought in automatically. UI hidden during capture. |
 | **Three delivery channels** | Clipboard (copy and paste anywhere) · Direct push to claude.ai / claude.com web tabs (text + screenshots attached as image files, auto-submit) · MCP server for any local Claude Code session. |
 | **Project auto-targeting** | Batches from `localhost:<port>` are stamped with the dev server's project directory (resolved via `lsof`), so `tsayru_latest_tasks` in the matching Claude Code session picks up exactly its own tasks. |
@@ -206,6 +207,7 @@ tsayru/
 ```bash
 npm run watch     # rebuild extension/content.js on every src/ change
 npm test          # vitest: selector builder, formatter, server storage
+npm run package   # build + zip extension/ into dist/tsayru-<version>.zip (store-ready)
 ```
 
 After any source change: rebuild → reload the extension in `chrome://extensions` → reload pages where you want the new code. CI fails if `extension/content.js` doesn't match `src/` — always commit the rebuilt bundle together with the source.

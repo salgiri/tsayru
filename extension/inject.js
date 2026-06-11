@@ -2,6 +2,63 @@
   if (window.__tsayruInjectInstalled) return;
   window.__tsayruInjectInstalled = true;
 
+  // ---------- Page-error buffer (MAIN world) ----------
+  // Sees what the content script can't: console.error calls (React dev
+  // warnings live here) and unhandled promise rejections (realm-local).
+  // Installed only from the moment the inspector is first used on the page.
+
+  const pageErrors = [];
+  const pushErr = (message, source) => {
+    let msg = String(message || "").replace(/`/g, "'").replace(/\s+/g, " ").slice(0, 200);
+    if (!msg) return;
+    const last = pageErrors[pageErrors.length - 1];
+    if (last && last.message === msg) {
+      last.count = (last.count || 1) + 1;
+      last.at = Date.now();
+      return;
+    }
+    pageErrors.push({ message: msg, source: source || null, count: 1, at: Date.now() });
+    if (pageErrors.length > 10) pageErrors.shift();
+  };
+
+  const shortSource = (filename, lineno) => {
+    if (!filename) return null;
+    const tail = String(filename).split("/").slice(-2).join("/");
+    return lineno ? `${tail}:${lineno}` : tail;
+  };
+
+  window.addEventListener("error", (e) => {
+    if (e.message) pushErr(e.message, shortSource(e.filename, e.lineno));
+  });
+
+  window.addEventListener("unhandledrejection", (e) => {
+    let m = "";
+    try {
+      m = String((e.reason && (e.reason.message || e.reason)) || "");
+    } catch {}
+    pushErr(`unhandled rejection: ${m || "(no message)"}`);
+  });
+
+  // Wrap console.error to catch framework dev warnings ("Each child in a
+  // list should have a unique key…"). Original behavior is preserved.
+  const origConsoleError = console.error;
+  console.error = function (...args) {
+    try {
+      const text = args
+        .map((a) => {
+          if (typeof a === "string") return a;
+          try {
+            return (a && a.message) || JSON.stringify(a);
+          } catch {
+            return String(a);
+          }
+        })
+        .join(" ");
+      pushErr(text);
+    } catch {}
+    return origConsoleError.apply(this, args);
+  };
+
   const reactFiberKey = (el) =>
     Object.keys(el).find(
       (k) =>
@@ -210,7 +267,24 @@
   window.addEventListener("message", (e) => {
     if (e.source !== window) return;
     const data = e.data;
-    if (!data || data.type !== "TSAYRU_DETECT_REQUEST") return;
+    if (!data) return;
+
+    if (data.type === "TSAYRU_ERRORS_REQUEST") {
+      const now = Date.now();
+      const errors = pageErrors.slice(-5).map((er) => ({
+        message: er.message,
+        source: er.source,
+        count: er.count || 1,
+        ago: Math.round((now - er.at) / 1000),
+      }));
+      window.postMessage(
+        { type: "TSAYRU_ERRORS_RESPONSE", requestId: data.requestId, errors },
+        location.origin || "*",
+      );
+      return;
+    }
+
+    if (data.type !== "TSAYRU_DETECT_REQUEST") return;
     const { x, y, requestId } = data;
     let result = null;
     try {

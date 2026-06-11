@@ -7,7 +7,9 @@ import {
   snapshotHtml,
   snapshotEnv,
   ensureMainWorld,
+  collectPageErrors,
 } from "./framework.js";
+import { recentContentErrors } from "./errors.js";
 import { deepElementFromPoint } from "./selector.js";
 import { captureElement } from "./screenshot.js";
 import { ensureSidebar, renderSidebar } from "./sidebar.js";
@@ -127,8 +129,23 @@ const onClick = async (e) => {
   const quick = e.altKey; // Alt+click = quick-mark, no modal
   setInspecting(false);
   moveHighlight(null);
+  // Screenshot and MAIN-world error collection run concurrently.
   // captureElement gracefully returns null on failure (rate-limit, chrome:// pages, etc.).
-  ctx.screenshot = await captureElement(target);
+  const [screenshot, mainErrors] = await Promise.all([
+    captureElement(target),
+    collectPageErrors().catch(() => []),
+  ]);
+  ctx.screenshot = screenshot;
+  // Merge MAIN-world errors (console.error, rejections) with the content-side
+  // buffer (uncaught errors since page load); dedupe by message, cap at 5.
+  const seen = new Set();
+  ctx.pageErrors = [...mainErrors, ...recentContentErrors()]
+    .filter((er) => {
+      if (!er?.message || seen.has(er.message)) return false;
+      seen.add(er.message);
+      return true;
+    })
+    .slice(0, 5);
   if (quick) {
     await quickAddTask(target, ctx);
     return;

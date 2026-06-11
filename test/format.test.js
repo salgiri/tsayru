@@ -143,6 +143,28 @@ describe("formatTasks", () => {
     expect(md).not.toContain("- html:");
   });
 
+  it("renders recent page errors with count/source/age metadata", () => {
+    const md = formatTasks(
+      [
+        task({
+          pageErrors: [
+            {
+              message: "TypeError: x is undefined",
+              source: "src/App.tsx:42",
+              count: 3,
+              ago: 12,
+            },
+            { message: "unhandled rejection: boom", source: null, count: 1, ago: 2 },
+          ],
+        }),
+      ],
+      null,
+    );
+    expect(md).toContain("- recent page errors:");
+    expect(md).toContain("  - `TypeError: x is undefined` (×3, src/App.tsx:42, 12s ago)");
+    expect(md).toContain("  - `unhandled rejection: boom` (2s ago)");
+  });
+
   it("marks done tasks and substitutes text for quick-marked ones", () => {
     const md = formatTasks(
       [task({ done: true }), task({ label: "Quick", text: "" })],

@@ -41,6 +41,7 @@ const addTask = async (selector, label, text, frameworkPromise, ctx) => {
     screenshot: ctx?.screenshot || null,
     html: ctx?.html || null,
     env: ctx?.env || null,
+    pageErrors: ctx?.pageErrors?.length ? ctx.pageErrors : null,
     done: false,
     addedAt: new Date().toISOString(),
   });

@@ -61,6 +61,39 @@ export const detectFramework = async (target) => {
   });
 };
 
+// Pull the MAIN-world page-error buffer (console.error, unhandled rejections,
+// uncaught errors) via the same postMessage bridge as detectFramework.
+// Resolves [] when inject.js isn't reachable.
+export const collectPageErrors = async () => {
+  await ensureMainWorld();
+  return new Promise((resolve) => {
+    const requestId =
+      Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+    const onResp = (e) => {
+      if (e.source !== window) return;
+      const data = e.data;
+      if (
+        !data ||
+        data.type !== "TSAYRU_ERRORS_RESPONSE" ||
+        data.requestId !== requestId
+      )
+        return;
+      window.removeEventListener("message", onResp);
+      clearTimeout(timer);
+      resolve(Array.isArray(data.errors) ? data.errors : []);
+    };
+    window.addEventListener("message", onResp);
+    window.postMessage(
+      { type: "TSAYRU_ERRORS_REQUEST", requestId },
+      location.origin || "*",
+    );
+    const timer = setTimeout(() => {
+      window.removeEventListener("message", onResp);
+      resolve([]);
+    }, 150);
+  });
+};
+
 // Sanitized outerHTML snippet (≤ maxLen chars): whitespace collapsed, bulky
 // data-URLs stubbed out, backticks neutralized so it can sit inside a
 // markdown code span. Gives Claude the element's real structure.
