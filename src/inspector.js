@@ -1,7 +1,7 @@
 // Inspector mode: highlight overlay, mouse/click/keyboard handlers.
 // Sidebar visibility (show/hide/toggle) — kept here because hiding the panel must turn off inspector.
 
-import { el, state, refs } from "./core.js";
+import { el, state, refs, bus } from "./core.js";
 import {
   snapshotComputedStyles,
   snapshotHtml,
@@ -23,8 +23,16 @@ export const ensureOverlay = () => {
   document.documentElement.appendChild(refs.highlight);
 };
 
+// HARD INVARIANT: the highlight may only ever be visible while the sidebar is
+// open. With the sidebar hidden there is no legitimate caller (inspector and
+// hover-preview both live in the sidebar), so any attempt to show it then is
+// a bug — coerce it to hide instead of trusting call sites.
+const sidebarVisible = () =>
+  !!refs.sidebar && !refs.sidebar.classList.contains("tsayru-hidden");
+
 export const moveHighlight = (target) => {
   if (!refs.highlight) return;
+  if (target && !sidebarVisible()) target = null;
   if (!target) {
     refs.highlight.style.display = "none";
     return;
@@ -41,7 +49,13 @@ export const moveHighlight = (target) => {
 export const setInspecting = (on) => {
   state.inspecting = on;
   document.documentElement.classList.toggle("tsayru-inspecting", on);
-  if (!on) moveHighlight(null);
+  if (!on) {
+    // Clear the hover target too — a stale `state.hovered` was the source of
+    // "ghost" highlights: scroll/resize handlers happily re-showed it long
+    // after the inspector was turned off.
+    state.hovered = null;
+    moveHighlight(null);
+  }
   // Warm up the MAIN-world fiber probe so the first click's framework
   // detection doesn't race the lazy injection.
   if (on) ensureMainWorld();
@@ -167,18 +181,24 @@ export const initEventListeners = () => {
   document.addEventListener("mouseup", onPointerSuppress, true);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKeyDown, true);
-  // Modal dispatches this after a task is added — re-arm the inspector so a
-  // batch session is click → type → Enter → click, without re-enabling by hand.
-  // (CustomEvent instead of a direct import to avoid a modal↔inspector cycle.)
-  window.addEventListener("tsayru-task-added", () => setInspecting(true));
+  // Modal emits this after a task is added — re-arm the inspector so a batch
+  // session is click → type → Enter → click, without re-enabling by hand.
+  // Internal bus, NOT a window event: the host page must not be able to
+  // spoof a signal that turns the inspector on.
+  bus.on("task-added", () => {
+    if (sidebarVisible()) setInspecting(true);
+  });
+  // Keep the highlight glued to its element while actively inspecting.
+  // Guarded on `state.inspecting` — these used to fire on a stale hover
+  // target and resurrect the highlight while the extension was collapsed.
   window.addEventListener(
     "scroll",
     () => {
-      if (state.hovered) moveHighlight(state.hovered);
+      if (state.inspecting && state.hovered) moveHighlight(state.hovered);
     },
     true,
   );
   window.addEventListener("resize", () => {
-    if (state.hovered) moveHighlight(state.hovered);
+    if (state.inspecting && state.hovered) moveHighlight(state.hovered);
   });
 };

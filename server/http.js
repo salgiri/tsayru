@@ -10,6 +10,7 @@
 
 import express from "express";
 import { readFile } from "node:fs/promises";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -25,7 +26,21 @@ import { resolveProjectByHost } from "./lib/project.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.TSAYRU_PORT || 7777);
-const HOST = "127.0.0.1"; // never bind 0.0.0.0 — extension talks to localhost only
+
+// Team mode: TSAYRU_BIND widens the listen address (e.g. 0.0.0.0 for LAN) so
+// teammates' extensions can submit into one shared inbox. A non-loopback bind
+// REQUIRES TSAYRU_TOKEN — refusing to start otherwise keeps the solo default
+// (loopback, no auth) impossible to misconfigure into an open LAN inbox.
+const HOST = process.env.TSAYRU_BIND || "127.0.0.1";
+const TOKEN = process.env.TSAYRU_TOKEN || null;
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+if (!LOOPBACK.has(HOST) && !TOKEN) {
+  console.error(
+    `[tsayru] refusing to bind ${HOST} without a token.\n` +
+      `[tsayru] team mode needs auth: TSAYRU_BIND=${HOST} TSAYRU_TOKEN=<secret> node http.js`,
+  );
+  process.exit(1);
+}
 
 const pkg = JSON.parse(
   await readFile(path.join(__dirname, "package.json"), "utf8"),
@@ -53,11 +68,34 @@ app.use((req, res, next) => {
   if (origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Vary", "Origin");
   }
   if (req.method === "OPTIONS") {
     res.status(204).end();
+    return;
+  }
+  next();
+});
+
+// Bearer auth — active only when TSAYRU_TOKEN is set (mandatory for any
+// non-loopback bind). /health stays open so monitoring/discovery works.
+const tokenOk = (header) => {
+  const m = /^Bearer\s+(.+)$/.exec(String(header || ""));
+  if (!m) return false;
+  // Hash both sides so timingSafeEqual gets equal-length buffers.
+  const a = createHash("sha256").update(m[1]).digest();
+  const b = createHash("sha256").update(TOKEN).digest();
+  return timingSafeEqual(a, b);
+};
+
+app.use((req, res, next) => {
+  if (!TOKEN || req.path === "/health") {
+    next();
+    return;
+  }
+  if (!tokenOk(req.headers.authorization)) {
+    res.status(401).json({ ok: false, error: "unauthorized" });
     return;
   }
   next();
@@ -186,6 +224,10 @@ app.use((_req, res) => {
 const server = app.listen(PORT, HOST, () => {
   console.log(`[tsayru] inbox listening on http://${HOST}:${PORT}`);
   console.log(`[tsayru] version ${pkg.version}`);
+  if (TOKEN) console.log("[tsayru] bearer-token auth ENABLED");
+  if (!LOOPBACK.has(HOST)) {
+    console.log("[tsayru] TEAM MODE: non-loopback bind — token required on every request");
+  }
 });
 
 server.on("error", (err) => {

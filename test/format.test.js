@@ -3,6 +3,7 @@ import {
   formatTask,
   formatTasks,
   filterByHost,
+  taskTags,
   safeHost,
 } from "../src/format.js";
 
@@ -203,6 +204,41 @@ describe("formatTasks", () => {
       expect(md).toContain("- screenshot: attached image #2");
       expect(md).not.toContain("attached image #3");
     });
+  });
+});
+
+describe("tags", () => {
+  it("extracts unicode hashtags, deduped and lowercased", () => {
+    expect(taskTags("Fix #Nav and #nav plus #навигация, ignore #a")).toEqual([
+      "nav",
+      "навигация",
+    ]);
+    expect(taskTags("")).toEqual([]);
+    expect(taskTags(null)).toEqual([]);
+  });
+
+  it("renders a tags line and filters by tag with header suffix", () => {
+    const tasks = [
+      task({ text: "Align the #nav icons" }),
+      task({ label: "Other", text: "no tags here" }),
+    ];
+    const all = formatTasks(tasks, null);
+    expect(all).toContain("- tags: #nav");
+    expect(all).toContain("Other");
+
+    const filtered = formatTasks(tasks, null, { filterTag: "nav" });
+    expect(filtered).toContain("# UI tasks (tsayru) — #nav");
+    expect(filtered).toContain("Align the #nav icons");
+    expect(filtered).not.toContain("Other");
+  });
+
+  it("combines host and tag in the header scope", () => {
+    const md = formatTasks(
+      [task({ text: "#header tweak" })],
+      "localhost:5173",
+      { filterTag: "header" },
+    );
+    expect(md).toContain("# UI tasks (tsayru) — localhost:5173 · #header");
   });
 });
 

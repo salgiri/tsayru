@@ -7,19 +7,28 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Only the local tsayru-server may be fetched on behalf of content scripts.
-// Defense-in-depth: the only sender today is our own content script, but a
-// future bug should not turn this handler into an open proxy with the
-// extension's host permissions.
-const isAllowedServerUrl = (url) => {
+// Inbox server settings. Default is the local tsayru-server; the options page
+// can point at a shared team server (with a Bearer token). The background
+// builds the final URL itself from a content-script-supplied PATH — pages and
+// content scripts can never redirect the request to an arbitrary host.
+const DEFAULT_SERVER = "http://127.0.0.1:7777";
+
+const getServerSettings = async () => {
   try {
-    const u = new URL(url);
-    return (
-      u.protocol === "http:" &&
-      (u.hostname === "127.0.0.1" || u.hostname === "localhost")
-    );
+    const data = await chrome.storage.local.get("tsayru_settings");
+    const s = data?.tsayru_settings || {};
+    let serverUrl = DEFAULT_SERVER;
+    if (typeof s.serverUrl === "string" && s.serverUrl.trim()) {
+      const u = new URL(s.serverUrl.trim());
+      if (u.protocol === "http:" || u.protocol === "https:") {
+        serverUrl = u.origin;
+      }
+    }
+    const token =
+      typeof s.token === "string" && s.token.trim() ? s.token.trim() : null;
+    return { serverUrl, token };
   } catch {
-    return false;
+    return { serverUrl: DEFAULT_SERVER, token: null };
   }
 };
 
@@ -45,25 +54,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async
   }
 
-  // HTTP request to the local tsayru-server. Routed through background to
-  // bypass page CSP. host_permissions allow localhost. Supports GET (no body)
-  // and POST/DELETE (JSON body).
+  // HTTP request to the tsayru inbox server. Routed through background to
+  // bypass page CSP. Content scripts send a path (e.g. "/tasks"); the base
+  // URL and optional Bearer token come from the options-page settings.
   if (msg?.type === "TSAYRU_SEND") {
-    const { url, body, method = "POST" } = msg;
-    if (!isAllowedServerUrl(url)) {
-      sendResponse({
-        ok: false,
-        error: "blocked: only the local tsayru-server may be called",
-      });
+    const { path, body, method = "POST" } = msg;
+    if (typeof path !== "string" || !path.startsWith("/")) {
+      sendResponse({ ok: false, error: "path required" });
       return true;
     }
-    const init = { method };
-    if (body !== undefined && body !== null) {
-      init.headers = { "Content-Type": "application/json" };
-      init.body = JSON.stringify(body);
-    }
-    fetch(url, init)
-      .then(async (r) => {
+    (async () => {
+      try {
+        const { serverUrl, token } = await getServerSettings();
+        const init = { method, headers: {} };
+        if (token) init.headers["Authorization"] = `Bearer ${token}`;
+        if (body !== undefined && body !== null) {
+          init.headers["Content-Type"] = "application/json";
+          init.body = JSON.stringify(body);
+        }
+        const r = await fetch(serverUrl + path, init);
         const text = await r.text();
         if (!r.ok) {
           sendResponse({ ok: false, error: `HTTP ${r.status}: ${text}` });
@@ -74,8 +83,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch {
           sendResponse({ ok: true, data: text });
         }
-      })
-      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err) });
+      }
+    })();
     return true; // async
   }
 

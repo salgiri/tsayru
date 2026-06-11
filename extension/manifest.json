@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "tsayru",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Annotate UI blocks with tasks and ship them to Claude Code as a single message.",
   "permissions": ["activeTab", "scripting", "storage", "unlimitedStorage", "clipboardWrite"],
   "host_permissions": [
@@ -13,7 +13,13 @@
     "https://claude.com/*"
   ],
   "action": {
-    "default_title": "tsayru: toggle inspector (Cmd+Shift+K)"
+    "default_title": "tsayru: toggle inspector (Cmd+Shift+K)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "commands": {
     "_execute_action": {
@@ -23,6 +29,10 @@
       },
       "description": "Toggle tsayru inspector on the active tab"
     }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
   },
   "background": {
     "service_worker": "background.js"
@@ -37,6 +47,7 @@
   ],
   "icons": {
     "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }

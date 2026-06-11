@@ -2,7 +2,7 @@
 // Also: copy-to-clipboard and clear handlers, flash toast.
 
 import { el, state, refs, safeHost, plural, persist } from "./core.js";
-import { formatTasks, formatTask, filterByHost } from "./format.js";
+import { formatTasks, formatTask, filterByHost, taskTags } from "./format.js";
 import { queryDeep } from "./selector.js";
 import {
   toggleInspector,
@@ -58,8 +58,10 @@ const writeClipboard = async (text, okMsg) => {
 };
 
 const copyAll = async () => {
-  const tasks = filterByHost(state.tasks, state.filterHost);
-  const text = formatTasks(state.tasks, state.filterHost);
+  const tasks = visibleTasks();
+  const text = formatTasks(state.tasks, state.filterHost, {
+    filterTag: state.filterTag,
+  });
   if (!text) {
     flash("nothing to copy");
     return;
@@ -77,8 +79,15 @@ const copyOne = async (task, displayIndex) => {
   await writeClipboard(formatTask(task, displayIndex), "task copied");
 };
 
-const SERVER_BASE = "http://127.0.0.1:7777";
-const SERVER_URL = `${SERVER_BASE}/tasks`;
+// The current filter scope — what the user actually sees in the list.
+// Copy / send / clear all operate on this, so the buttons do what the eye expects.
+const visibleTasks = () => {
+  let list = filterByHost(state.tasks, state.filterHost);
+  if (state.filterTag) {
+    list = list.filter((t) => taskTags(t.text).includes(state.filterTag));
+  }
+  return list;
+};
 
 const isContextInvalidated = (err) =>
   /context invalidated|Extension context/i.test(String(err || ""));
@@ -98,7 +107,7 @@ const postBatch = (tasks, target) =>
     };
     try {
       chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", url: SERVER_URL, body: payload, method: "POST" },
+        { type: "TSAYRU_SEND", path: "/tasks", body: payload, method: "POST" },
         (resp) => {
           if (chrome.runtime.lastError || !resp || !resp.ok) {
             resolve({
@@ -158,7 +167,10 @@ const sendBatch = async (tasks, target) => {
   // Markdown stays light; screenshots travel as file attachments (synthetic
   // paste in the composer) instead of inline base64, which ProseMirror choked
   // on and the chat didn't render.
-  const md = formatTasks(tasks, state.filterHost, { screenshotMode: "attached" });
+  const md = formatTasks(tasks, state.filterHost, {
+    filterTag: state.filterTag,
+    screenshotMode: "attached",
+  });
   const images = tasks.map((t) => t.screenshot).filter(Boolean);
   const inject = await pushToWebChat(target.tabId, md, images);
   if (inject.ok) {
@@ -176,9 +188,7 @@ const sendBatch = async (tasks, target) => {
 };
 
 const sendToServer = async () => {
-  const tasks = state.filterHost
-    ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost)
-    : state.tasks;
+  const tasks = visibleTasks();
   if (tasks.length === 0) {
     flash("nothing to send");
     return;
@@ -197,11 +207,7 @@ const pollDoneStatus = () => {
   if (!state.tasks.some((t) => t.id && !t.done)) return;
   try {
     chrome.runtime.sendMessage(
-      {
-        type: "TSAYRU_SEND",
-        url: `${SERVER_BASE}/tasks/done/recent`,
-        method: "GET",
-      },
+      { type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" },
       (resp) => {
         void chrome.runtime.lastError;
         const ids =
@@ -249,16 +255,11 @@ const onTaskLeave = () => {
 // tasks lives until the toast expires (8s), then it's gone for real.
 const clearTasks = () => {
   if (state.tasks.length === 0) return;
-  const fh = state.filterHost;
-  const removed = fh
-    ? state.tasks.filter((t) => safeHost(t.url) === fh)
-    : state.tasks.slice();
+  // Clears exactly what's on screen (host + tag scope) — undoable below.
+  const removed = visibleTasks();
   if (removed.length === 0) return;
-  if (fh) {
-    state.tasks = state.tasks.filter((t) => safeHost(t.url) !== fh);
-  } else {
-    state.tasks = [];
-  }
+  const removedSet = new Set(removed);
+  state.tasks = state.tasks.filter((t) => !removedSet.has(t));
   state.editingTaskIndex = null;
   persist();
   renderSidebar();
@@ -414,9 +415,14 @@ export const renderSidebar = () => {
     ...new Set(state.tasks.map((t) => safeHost(t.url)).filter(Boolean)),
   ];
 
-  // Reset filter if its host disappeared.
+  // Reset filters whose values disappeared.
   if (state.filterHost && !hosts.includes(state.filterHost)) {
     state.filterHost = null;
+  }
+  const hostScoped = filterByHost(state.tasks, state.filterHost);
+  const allTags = [...new Set(hostScoped.flatMap((t) => taskTags(t.text)))];
+  if (state.filterTag && !allTags.includes(state.filterTag)) {
+    state.filterTag = null;
   }
 
   if (hosts.length > 1) {
@@ -443,17 +449,39 @@ export const renderSidebar = () => {
     list.appendChild(tabs);
   }
 
-  const filtered = state.filterHost
-    ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost)
-    : state.tasks;
+  // Tag chips — rendered only when hashtags exist, so the row costs nothing
+  // for users who never type #tags.
+  if (allTags.length > 0) {
+    const row = el("div", { class: "tsayru-tagrow" });
+    for (const tag of allTags) {
+      const n = hostScoped.filter((t) => taskTags(t.text).includes(tag)).length;
+      const active = state.filterTag === tag;
+      row.appendChild(
+        el(
+          "button",
+          {
+            class: "tsayru-tagchip" + (active ? " tsayru-tagchip-active" : ""),
+            onClick: () => {
+              state.filterTag = active ? null : tag; // toggle
+              renderSidebar();
+            },
+          },
+          `#${tag} · ${n}`,
+        ),
+      );
+    }
+    list.appendChild(row);
+  }
+
+  const filtered = visibleTasks();
 
   if (filtered.length === 0) {
     list.appendChild(
       el(
         "div",
         { class: "tsayru-empty" },
-        state.filterHost
-          ? `No tasks for ${state.filterHost}.`
+        state.filterHost || state.filterTag
+          ? `No tasks for ${[state.filterHost, state.filterTag && `#${state.filterTag}`].filter(Boolean).join(" · ")}.`
           : "Enable the inspector and click an element to add a task.",
       ),
     );

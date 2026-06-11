@@ -1,7 +1,7 @@
 // Task input modal — shown after a click in inspector mode.
 // Fires framework detection in parallel; styles snapshot is captured upstream and passed in.
 
-import { el, state, refs, persist } from "./core.js";
+import { el, state, refs, persist, bus } from "./core.js";
 import { buildSelector, shortLabel } from "./selector.js";
 import { detectFramework } from "./framework.js";
 import { renderSidebar } from "./sidebar.js";
@@ -48,7 +48,7 @@ const addTask = async (selector, label, text, frameworkPromise, ctx) => {
   await persist();
   renderSidebar();
   // Re-arm the inspector for the next element (handled in inspector.js).
-  window.dispatchEvent(new CustomEvent("tsayru-task-added"));
+  bus.emit("task-added");
 };
 
 // Alt+click path: skip the modal entirely, save the task with empty text.

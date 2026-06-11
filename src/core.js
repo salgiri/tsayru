@@ -8,6 +8,7 @@ export const state = {
   tasks: [],
   editingTaskIndex: null,
   filterHost: null,
+  filterTag: null,
 };
 
 // Mutable DOM references shared across modules.
@@ -16,6 +17,23 @@ export const refs = {
   highlight: null,
   sidebar: null,
   modal: null,
+};
+
+// Tiny internal event bus. Unlike window CustomEvents, page scripts cannot
+// dispatch into it — state-changing signals (e.g. "task-added" re-arming the
+// inspector) must not be spoofable by the host page.
+const busHandlers = {};
+export const bus = {
+  on(evt, fn) {
+    (busHandlers[evt] ||= []).push(fn);
+  },
+  emit(evt, payload) {
+    for (const fn of busHandlers[evt] || []) {
+      try {
+        fn(payload);
+      } catch {}
+    }
+  },
 };
 
 export const el = (tag, attrs = {}, ...children) => {

@@ -44,6 +44,10 @@
     return parts.length ? parts.join(" \xB7 ") : null;
   };
   var filterByHost = (tasks, filterHost) => filterHost ? (tasks || []).filter((t) => safeHost(t.url) === filterHost) : tasks || [];
+  var taskTags = (text) => {
+    const m = String(text || "").match(/#[\p{L}\d_-]{2,24}/gu) || [];
+    return [...new Set(m.map((s) => s.slice(1).toLowerCase()))];
+  };
   var taskLines = (t, displayIndex, opts = {}) => {
     const mode = opts.screenshotMode || "note";
     const check = t.done ? "\u2705 " : "";
@@ -76,6 +80,10 @@
       lines.push(`- env: ${envParts.join(" \xB7 ")}`);
     }
     lines.push(`- url: ${t.url}`);
+    const tags = taskTags(t.text);
+    if (tags.length) {
+      lines.push(`- tags: ${tags.map((tag) => `#${tag}`).join(" ")}`);
+    }
     if (Array.isArray(t.pageErrors) && t.pageErrors.length) {
       lines.push(`- recent page errors:`);
       for (const er of t.pageErrors.slice(0, 5)) {
@@ -110,9 +118,13 @@
     ].join("\n");
   };
   var formatTasks = (tasks, filterHost, opts = {}) => {
-    const list = filterByHost(tasks, filterHost);
+    let list = filterByHost(tasks, filterHost);
+    if (opts.filterTag) {
+      list = list.filter((t) => taskTags(t.text).includes(opts.filterTag));
+    }
     if (list.length === 0) return "";
-    const header = filterHost ? `# UI tasks (tsayru) \u2014 ${filterHost}` : "# UI tasks (tsayru)";
+    const scope = [filterHost, opts.filterTag ? `#${opts.filterTag}` : null].filter(Boolean).join(" \xB7 ");
+    const header = scope ? `# UI tasks (tsayru) \u2014 ${scope}` : "# UI tasks (tsayru)";
     const lines = [header, ""];
     let attachmentNum = 0;
     list.forEach((t, i) => {
@@ -130,12 +142,27 @@
     hovered: null,
     tasks: [],
     editingTaskIndex: null,
-    filterHost: null
+    filterHost: null,
+    filterTag: null
   };
   var refs = {
     highlight: null,
     sidebar: null,
     modal: null
+  };
+  var busHandlers = {};
+  var bus = {
+    on(evt, fn) {
+      (busHandlers[evt] ||= []).push(fn);
+    },
+    emit(evt, payload) {
+      for (const fn of busHandlers[evt] || []) {
+        try {
+          fn(payload);
+        } catch {
+        }
+      }
+    }
   };
   var el = (tag, attrs = {}, ...children) => {
     const node = document.createElement(tag);
@@ -790,8 +817,10 @@
     }
   };
   var copyAll = async () => {
-    const tasks = filterByHost(state.tasks, state.filterHost);
-    const text = formatTasks(state.tasks, state.filterHost);
+    const tasks = visibleTasks();
+    const text = formatTasks(state.tasks, state.filterHost, {
+      filterTag: state.filterTag
+    });
     if (!text) {
       flash("nothing to copy");
       return;
@@ -804,8 +833,13 @@
   var copyOne = async (task, displayIndex) => {
     await writeClipboard(formatTask(task, displayIndex), "task copied");
   };
-  var SERVER_BASE = "http://127.0.0.1:7777";
-  var SERVER_URL = `${SERVER_BASE}/tasks`;
+  var visibleTasks = () => {
+    let list = filterByHost(state.tasks, state.filterHost);
+    if (state.filterTag) {
+      list = list.filter((t) => taskTags(t.text).includes(state.filterTag));
+    }
+    return list;
+  };
   var isContextInvalidated2 = (err) => /context invalidated|Extension context/i.test(String(err || ""));
   var postBatch = (tasks, target) => new Promise((resolve) => {
     const payload = {
@@ -818,7 +852,7 @@
     };
     try {
       chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", url: SERVER_URL, body: payload, method: "POST" },
+        { type: "TSAYRU_SEND", path: "/tasks", body: payload, method: "POST" },
         (resp) => {
           if (chrome.runtime.lastError || !resp || !resp.ok) {
             resolve({
@@ -859,7 +893,10 @@
     postBatch(tasks, target).then((p) => {
       if (!p.ok) console.warn("[tsayru] inbox save failed:", p.error);
     });
-    const md = formatTasks(tasks, state.filterHost, { screenshotMode: "attached" });
+    const md = formatTasks(tasks, state.filterHost, {
+      filterTag: state.filterTag,
+      screenshotMode: "attached"
+    });
     const images = tasks.map((t) => t.screenshot).filter(Boolean);
     const inject = await pushToWebChat(target.tabId, md, images);
     if (inject.ok) {
@@ -876,7 +913,7 @@
     }
   };
   var sendToServer = async () => {
-    const tasks = state.filterHost ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost) : state.tasks;
+    const tasks = visibleTasks();
     if (tasks.length === 0) {
       flash("nothing to send");
       return;
@@ -890,11 +927,7 @@
     if (!state.tasks.some((t) => t.id && !t.done)) return;
     try {
       chrome.runtime.sendMessage(
-        {
-          type: "TSAYRU_SEND",
-          url: `${SERVER_BASE}/tasks/done/recent`,
-          method: "GET"
-        },
+        { type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" },
         (resp) => {
           void chrome.runtime.lastError;
           const ids = resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
@@ -933,14 +966,10 @@
   };
   var clearTasks = () => {
     if (state.tasks.length === 0) return;
-    const fh = state.filterHost;
-    const removed = fh ? state.tasks.filter((t) => safeHost(t.url) === fh) : state.tasks.slice();
+    const removed = visibleTasks();
     if (removed.length === 0) return;
-    if (fh) {
-      state.tasks = state.tasks.filter((t) => safeHost(t.url) !== fh);
-    } else {
-      state.tasks = [];
-    }
+    const removedSet = new Set(removed);
+    state.tasks = state.tasks.filter((t) => !removedSet.has(t));
     state.editingTaskIndex = null;
     persist();
     renderSidebar();
@@ -1088,6 +1117,11 @@
     if (state.filterHost && !hosts.includes(state.filterHost)) {
       state.filterHost = null;
     }
+    const hostScoped = filterByHost(state.tasks, state.filterHost);
+    const allTags = [...new Set(hostScoped.flatMap((t) => taskTags(t.text)))];
+    if (state.filterTag && !allTags.includes(state.filterTag)) {
+      state.filterTag = null;
+    }
     if (hosts.length > 1) {
       const tabs = el("div", { class: "tsayru-tabs" });
       const mkTab = (label, value, count) => {
@@ -1111,13 +1145,34 @@
       }
       list.appendChild(tabs);
     }
-    const filtered = state.filterHost ? state.tasks.filter((t) => safeHost(t.url) === state.filterHost) : state.tasks;
+    if (allTags.length > 0) {
+      const row = el("div", { class: "tsayru-tagrow" });
+      for (const tag of allTags) {
+        const n = hostScoped.filter((t) => taskTags(t.text).includes(tag)).length;
+        const active = state.filterTag === tag;
+        row.appendChild(
+          el(
+            "button",
+            {
+              class: "tsayru-tagchip" + (active ? " tsayru-tagchip-active" : ""),
+              onClick: () => {
+                state.filterTag = active ? null : tag;
+                renderSidebar();
+              }
+            },
+            `#${tag} \xB7 ${n}`
+          )
+        );
+      }
+      list.appendChild(row);
+    }
+    const filtered = visibleTasks();
     if (filtered.length === 0) {
       list.appendChild(
         el(
           "div",
           { class: "tsayru-empty" },
-          state.filterHost ? `No tasks for ${state.filterHost}.` : "Enable the inspector and click an element to add a task."
+          state.filterHost || state.filterTag ? `No tasks for ${[state.filterHost, state.filterTag && `#${state.filterTag}`].filter(Boolean).join(" \xB7 ")}.` : "Enable the inspector and click an element to add a task."
         )
       );
     } else {
@@ -1225,7 +1280,7 @@
     });
     await persist();
     renderSidebar();
-    window.dispatchEvent(new CustomEvent("tsayru-task-added"));
+    bus.emit("task-added");
   };
   var quickAddTask = async (target, ctx) => {
     const selector = buildSelector(target);
@@ -1325,8 +1380,10 @@
     refs.highlight = el("div", { class: "tsayru-highlight" });
     document.documentElement.appendChild(refs.highlight);
   };
+  var sidebarVisible = () => !!refs.sidebar && !refs.sidebar.classList.contains("tsayru-hidden");
   var moveHighlight = (target) => {
     if (!refs.highlight) return;
+    if (target && !sidebarVisible()) target = null;
     if (!target) {
       refs.highlight.style.display = "none";
       return;
@@ -1340,7 +1397,10 @@
   var setInspecting = (on) => {
     state.inspecting = on;
     document.documentElement.classList.toggle("tsayru-inspecting", on);
-    if (!on) moveHighlight(null);
+    if (!on) {
+      state.hovered = null;
+      moveHighlight(null);
+    }
     if (on) ensureMainWorld();
     renderSidebar();
   };
@@ -1432,16 +1492,18 @@
     document.addEventListener("mouseup", onPointerSuppress, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("tsayru-task-added", () => setInspecting(true));
+    bus.on("task-added", () => {
+      if (sidebarVisible()) setInspecting(true);
+    });
     window.addEventListener(
       "scroll",
       () => {
-        if (state.hovered) moveHighlight(state.hovered);
+        if (state.inspecting && state.hovered) moveHighlight(state.hovered);
       },
       true
     );
     window.addEventListener("resize", () => {
-      if (state.hovered) moveHighlight(state.hovered);
+      if (state.inspecting && state.hovered) moveHighlight(state.hovered);
     });
   };
 

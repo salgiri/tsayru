@@ -29,7 +29,10 @@ When you're working with Claude on a frontend project, half the conversation is 
 | **Project auto-targeting** | Batches from `localhost:<port>` are stamped with the dev server's project directory (resolved via `lsof`), so `tsayru_latest_tasks` in the matching Claude Code session picks up exactly its own tasks. |
 | **Task lifecycle** | Claude marks implemented tasks via the `tsayru_mark_done` MCP tool — the sidebar strikes them through automatically. Clearing is undoable for 8 seconds. |
 | **Quick-mark** | `Alt+click` an element to add it without the dialog — fill descriptions later via inline edit, or let Claude infer the change from the screenshot. |
+| **Hashtag tags** | Type `#nav` or `#redesign` right in the task text — tags become filter chips in the sidebar and a `- tags:` line in the markdown. No separate tagging UI. |
 | **Per-host filtering** | Tabs in the sidebar split tasks across the projects you're working on. |
+| **Team mode** | Start the server with `TSAYRU_BIND=0.0.0.0 TSAYRU_TOKEN=<secret>` and teammates point their extension at it (extension options page) — one shared inbox for the whole team. |
+| **Cross-machine sync** | Point `TSAYRU_INBOX` at a synced folder (iCloud/Dropbox/network mount) on both machines — batches submitted on one appear in the other's MCP. |
 | **Inline editing** | Edit any task's text without losing the captured selector / screenshot. |
 | **Hover preview** | Hovering a task in the sidebar re-highlights the original element on the page. |
 
@@ -241,12 +244,12 @@ Tested on Chrome, Arc, and Brave (anything Chromium ≥ 111). Not compatible wit
 
 ## Roadmap
 
-- ~~Annotation overlays on screenshots~~ — done in v0.14.0 (automatic red outline + context)
-- Tags / colors for grouping a large batch by feature
-- Cross-machine batch sync
-- Team mode: shared MCP server so collaborators can submit into the same inbox
+- ~~Annotation overlays on screenshots~~ — v0.14.0 (automatic red outline + context)
+- ~~Tags for grouping a large batch by feature~~ — v0.16.0 (`#hashtags` in task text)
+- ~~Cross-machine batch sync~~ — v0.16.0 (`TSAYRU_INBOX` on a synced folder)
+- ~~Team mode: shared inbox for collaborators~~ — v0.16.0 (`TSAYRU_BIND` + `TSAYRU_TOKEN` + extension options page)
 
-The big architectural decisions are settled; future work is feature-side.
+The original roadmap is complete. Next milestone: Chrome Web Store release.
 
 ---
 

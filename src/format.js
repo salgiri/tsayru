@@ -60,6 +60,13 @@ export const filterByHost = (tasks, filterHost) =>
     ? (tasks || []).filter((t) => safeHost(t.url) === filterHost)
     : tasks || [];
 
+// Hashtags typed straight into the task text ("align the #nav icons") become
+// tags — no separate UI. Unicode word chars, 2–24 length, deduped, lowercase.
+export const taskTags = (text) => {
+  const m = String(text || "").match(/#[\p{L}\d_-]{2,24}/gu) || [];
+  return [...new Set(m.map((s) => s.slice(1).toLowerCase()))];
+};
+
 // Render a single task as markdown lines (no header, no trailing blank).
 // `displayIndex` is 1-based — what shows up in `## N. <label>`.
 //
@@ -106,6 +113,10 @@ const taskLines = (t, displayIndex, opts = {}) => {
     lines.push(`- env: ${envParts.join(" · ")}`);
   }
   lines.push(`- url: ${t.url}`);
+  const tags = taskTags(t.text);
+  if (tags.length) {
+    lines.push(`- tags: ${tags.map((tag) => `#${tag}`).join(" ")}`);
+  }
   if (Array.isArray(t.pageErrors) && t.pageErrors.length) {
     lines.push(`- recent page errors:`);
     for (const er of t.pageErrors.slice(0, 5)) {
@@ -147,13 +158,18 @@ export const formatTask = (t, displayIndex, opts = {}) => {
   ].join("\n");
 };
 
-// Format a task list. `filterHost` narrows by page host and suffixes the header.
+// Format a task list. `filterHost` narrows by page host, `opts.filterTag` by
+// hashtag; both suffix the header so the recipient sees the active scope.
 export const formatTasks = (tasks, filterHost, opts = {}) => {
-  const list = filterByHost(tasks, filterHost);
+  let list = filterByHost(tasks, filterHost);
+  if (opts.filterTag) {
+    list = list.filter((t) => taskTags(t.text).includes(opts.filterTag));
+  }
   if (list.length === 0) return "";
-  const header = filterHost
-    ? `# UI tasks (tsayru) — ${filterHost}`
-    : "# UI tasks (tsayru)";
+  const scope = [filterHost, opts.filterTag ? `#${opts.filterTag}` : null]
+    .filter(Boolean)
+    .join(" · ");
+  const header = scope ? `# UI tasks (tsayru) — ${scope}` : "# UI tasks (tsayru)";
   const lines = [header, ""];
   let attachmentNum = 0;
   list.forEach((t, i) => {

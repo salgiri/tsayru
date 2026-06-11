@@ -61,6 +61,16 @@ request with an `Origin` header that is not `chrome-extension://…` gets a
 Batches are validated (max 500 tasks, objects only) and the inbox self-prunes
 to the most recent 200 batches (`TSAYRU_MAX_BATCHES` to override).
 
+### Team mode & sync
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TSAYRU_PORT` | `7777` | Listen port. |
+| `TSAYRU_BIND` | `127.0.0.1` | Listen address. Non-loopback values (e.g. `0.0.0.0` for LAN team mode) **require** `TSAYRU_TOKEN` — the server refuses to start otherwise. |
+| `TSAYRU_TOKEN` | — | When set, every request (except `GET /health`) must carry `Authorization: Bearer <token>` (timing-safe compare). Teammates paste the same token into the extension's options page. |
+| `TSAYRU_INBOX` | `~/.tsayru/inbox` | Inbox directory. Point it at a synced folder (iCloud/Dropbox/network mount) on two machines for cross-machine batch sync — MCP reads the same env var. |
+| `TSAYRU_MAX_BATCHES` | `200` | Retention cap. |
+
 ## Wire MCP into Claude Code
 
 Add an entry to your Claude Code MCP config
