@@ -3,6 +3,8 @@
 // same module serves the extension bundle AND the Node server
 // (server/lib/format.js re-exports from here; the renderers must never fork).
 
+import { styleChangeLines, STYLE_INSTRUCTION } from "./stylechanges.js";
+
 export const safeHost = (url) => {
   try {
     return new URL(url).host;
@@ -117,6 +119,9 @@ const taskLines = (t, displayIndex, opts = {}) => {
   if (tags.length) {
     lines.push(`- tags: ${tags.map((tag) => `#${tag}`).join(" ")}`);
   }
+  // Style-editor tasks (⌘+click) carry the edits themselves.
+  const styleChanges = styleChangeLines(t.styleChanges);
+  lines.push(...styleChanges);
   if (Array.isArray(t.pageErrors) && t.pageErrors.length) {
     lines.push(`- recent page errors:`);
     for (const er of t.pageErrors.slice(0, 5)) {
@@ -136,11 +141,15 @@ const taskLines = (t, displayIndex, opts = {}) => {
     lines.push(`- screenshot: ✓ captured (image data omitted from clipboard copy)`);
   }
   lines.push("");
-  // Quick-marked tasks (Alt+click) may ship without a description.
-  lines.push(
-    t.text ||
-      "(no description provided — infer the needed change from the screenshot and element context)",
-  );
+  if (styleChanges.length) {
+    lines.push([t.text, STYLE_INSTRUCTION].filter(Boolean).join("\n\n"));
+  } else {
+    // Quick-marked tasks (Alt+click) may ship without a description.
+    lines.push(
+      t.text ||
+        "(no description provided — infer the needed change from the screenshot and element context)",
+    );
+  }
   if (t.screenshot && mode === "inline") {
     lines.push("");
     lines.push(`![${t.label}](${t.screenshot})`);

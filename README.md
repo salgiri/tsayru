@@ -29,6 +29,7 @@ When you're working with Claude on a frontend project, half the conversation is 
 | **Project auto-targeting** | Batches from `localhost:<port>` are stamped with the dev server's project directory (resolved via `lsof`), so `tsayru_latest_tasks` in the matching Claude Code session picks up exactly its own tasks. |
 | **Task lifecycle** | Claude marks implemented tasks via the `tsayru_mark_done` MCP tool — the sidebar strikes them through automatically. Clearing is undoable for 8 seconds. |
 | **Quick-mark** | `Alt+click` an element to add it without the dialog — fill descriptions later via inline edit, or let Claude infer the change from the screenshot. |
+| **Style editor** | `⌘+click` (`Ctrl+click` on Windows/Linux) any element to restyle it live — colours, border, shadow, spacing, type — or edit every CSS rule that styles it, state by state (`:hover`, `:focus`, `::before`…). The edits become a task listing each change and the rule that set the old value. |
 | **Hashtag tags** | Type `#nav` or `#redesign` right in the task text — tags become filter chips in the sidebar and a `- tags:` line in the markdown. No separate tagging UI. |
 | **Per-host filtering** | Tabs in the sidebar split tasks across the projects you're working on. |
 | **Team mode** | Start the server with `TSAYRU_BIND=0.0.0.0 TSAYRU_TOKEN=<secret>` and teammates point their extension at it (extension options page) — one shared inbox for the whole team. |
@@ -77,6 +78,15 @@ Then load it in Chrome (or any Chromium-based browser — Arc, Brave, Edge):
 | **To Claude** | Picks an open `claude.ai` or `claude.com` tab, injects the markdown, attaches the screenshots as image files, and presses Send. No keyboard step. |
 
 You can also filter tasks by host (the tabs above the list), edit a task in place (`✎`), or clear them all at once.
+
+### Restyling with the style editor
+
+Instead of describing a change, make it: with the sidebar open, **`⌘+click`** (`Ctrl+click` on Windows/Linux) any element. Holding the key outlines what a click will pick; a click on a button's label picks the button (the breadcrumbs lead back down to the label).
+
+- **Quick** — text and background colour (with opacity), border, radius, shadow layers with presets, margin / padding / size as a box model, gap, font size / weight / line height / letter spacing / alignment. Values preview live; `↑`/`↓` nudge numbers (`Shift` ×10, `Alt` ×0.1); a label marked `↺` resets its property.
+- **CSS** — every rule that styles the element, one state at a time: Default, Hover, Focus, Focus-visible, Active, Before, After. Picking Hover/Focus/Active also shows the element in that state on the page. Edit values and names, tick declarations off and on, delete, add (`name:` jumps to the value), or start a new rule for a state the page doesn't style yet. Overridden declarations are struck through; rules shared by many elements say how many; global `*` resets are folded away.
+
+Edits preview on the page only (a reload clears them). **Esc**, `×`, or `⌘+click` on the next element saves the edits as a task — one task per element, merged if you come back to it — with the exact changes (`padding-left: 22px → 28px — set by .bt-cta in src/kit/buttons.css`) and an optional note. **Revert** undoes the panel's edits. With the sidebar hidden, `⌘+click` belongs to the page again (open in new tab).
 
 ---
 
@@ -176,6 +186,12 @@ tsayru/
 │   ├── framework.js     postMessage bridge to inject.js
 │   ├── screenshot.js    captureVisibleTab + canvas crop
 │   ├── inspector.js     mousemove/click/keyboard handlers
+│   ├── styleeditor.js   ⌘+click style editor: session, previews, saving
+│   ├── stylepanel.js    style panel shell (+ stylequick / stylerules tabs,
+│   │                    stylewidgets inputs, stylepanel-css theme)
+│   ├── cssrules.js      which CSS rules style an element, by state; forced states
+│   ├── stylevalues.js   colour / length / shadow value helpers
+│   ├── stylechanges.js  style change records → markdown
 │   ├── sidebar.js       sidebar UI, copy / clear / send
 │   ├── modal.js         "task for this element" dialog
 │   ├── chatpicker.js    web-chat picker for "To Claude"
@@ -198,7 +214,7 @@ tsayru/
 │   ├── package.json
 │   └── README.md
 │
-├── test/                vitest suites (selector, format, storage)
+├── test/                vitest suites (selector, format, storage, CSS rules, style values/changes)
 ├── package.json         root build pipeline (esbuild) + tests
 └── README.md            you are here
 ```
@@ -209,7 +225,7 @@ tsayru/
 
 ```bash
 npm run watch     # rebuild extension/content.js on every src/ change
-npm test          # vitest: selector builder, formatter, server storage
+npm test          # vitest: selector builder, formatter, server storage, style editor logic
 npm run package   # build + zip extension/ into dist/tsayru-<version>.zip (store-ready)
 ```
 
@@ -248,6 +264,7 @@ Tested on Chrome, Arc, and Brave (anything Chromium ≥ 111). Not compatible wit
 - ~~Tags for grouping a large batch by feature~~ — v0.16.0 (`#hashtags` in task text)
 - ~~Cross-machine batch sync~~ — v0.16.0 (`TSAYRU_INBOX` on a synced folder)
 - ~~Team mode: shared inbox for collaborators~~ — v0.16.0 (`TSAYRU_BIND` + `TSAYRU_TOKEN` + extension options page)
+- Style editor — v0.17.0 (`⌘+click`: restyle live, edit rules by state, ship the exact changes)
 
 The original roadmap is complete. Next milestone: Chrome Web Store release.
 

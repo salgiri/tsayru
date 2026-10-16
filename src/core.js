@@ -17,6 +17,7 @@ export const refs = {
   highlight: null,
   sidebar: null,
   modal: null,
+  styleHost: null, // the style editor's panel + outline (styleeditor.js)
 };
 
 // Tiny internal event bus. Unlike window CustomEvents, page scripts cannot

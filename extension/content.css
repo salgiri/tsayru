@@ -671,3 +671,13 @@ html.tsayru-inspecting * {
   background: rgba(255, 200, 60, 0.22);
   border-color: rgba(255, 200, 60, 0.55);
 }
+
+/* Style-editor tasks (⌘+click): what changed, in one line. */
+.tsayru-task-style {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: #a5b4fc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

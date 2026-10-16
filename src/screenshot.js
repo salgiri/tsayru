@@ -111,28 +111,27 @@ const cropToDataUrl = (img, rect) => {
   return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
 };
 
-// Briefly hide our own chrome (sidebar, highlight) so the capture is clean.
-// `style.visibility = "hidden"` is instant — no transition, restored synchronously.
+// Briefly hide our own chrome (sidebar, highlight, style editor) so the
+// capture is clean. `visibility: hidden` is instant — no transition, restored
+// synchronously. Important priority: the style editor's host pins its own
+// styles with !important against page CSS.
 const withHiddenUI = async (fn) => {
-  const sidebar = refs.sidebar;
-  const highlight = refs.highlight;
-  const prevSidebar = sidebar ? sidebar.style.visibility : null;
-  const prevHighlight = highlight ? highlight.style.visibility : null;
-  if (sidebar) sidebar.style.visibility = "hidden";
-  if (highlight) highlight.style.visibility = "hidden";
+  const nodes = [refs.sidebar, refs.highlight, refs.styleHost].filter(Boolean);
+  const prev = nodes.map((n) => [
+    n.style.getPropertyValue("visibility"),
+    n.style.getPropertyPriority("visibility"),
+  ]);
+  for (const n of nodes) n.style.setProperty("visibility", "hidden", "important");
   // Wait one frame so the browser applies the visibility change.
   await new Promise((resolve) => requestAnimationFrame(resolve));
   try {
     return await fn();
   } finally {
-    if (sidebar) {
-      if (prevSidebar) sidebar.style.visibility = prevSidebar;
-      else sidebar.style.removeProperty("visibility");
-    }
-    if (highlight) {
-      if (prevHighlight) highlight.style.visibility = prevHighlight;
-      else highlight.style.removeProperty("visibility");
-    }
+    nodes.forEach((n, i) => {
+      const [value, priority] = prev[i];
+      if (value) n.style.setProperty("visibility", value, priority);
+      else n.style.removeProperty("visibility");
+    });
   }
 };
 

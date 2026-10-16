@@ -12,7 +12,7 @@ import {
 } from "./inspector.js";
 import { pickTargetChat } from "./chatpicker.js";
 
-const flash = (msg) => {
+export const flash = (msg) => {
   const tip = el("div", { class: "tsayru-flash" }, msg);
   document.documentElement.appendChild(tip);
   setTimeout(() => tip.remove(), 1400);
@@ -395,14 +395,34 @@ const renderTask = (task, idx, displayNum) => {
       ),
     ),
     el("div", { class: "tsayru-task-sel" }, task.selector),
-    el(
-      "div",
-      {
-        class:
-          "tsayru-task-text" + (task.text ? "" : " tsayru-task-text-empty"),
-      },
-      task.text || "no description — click ✎ to add",
-    ),
+    // Style-editor tasks speak through their change list; no nag for text.
+    task.text || !task.styleChanges?.length
+      ? el(
+          "div",
+          {
+            class:
+              "tsayru-task-text" + (task.text ? "" : " tsayru-task-text-empty"),
+          },
+          task.text || "no description — click ✎ to add",
+        )
+      : null,
+    task.styleChanges?.length ? styleSummary(task.styleChanges) : null,
+  );
+};
+
+// "3 style changes · background-color, padding-left, box-shadow"
+const styleSummary = (changes) => {
+  const props = [...new Set(changes.map((c) => c.property))];
+  const shown = props.slice(0, 4).join(", ") + (props.length > 4 ? ", …" : "");
+  return el(
+    "div",
+    {
+      class: "tsayru-task-style",
+      title: changes
+        .map((c) => `${c.property}: ${c.before ?? "—"} → ${c.after ?? "removed"}`)
+        .join("\n"),
+    },
+    `${changes.length} style change${plural(changes.length)} · ${shown}`,
   );
 };
 

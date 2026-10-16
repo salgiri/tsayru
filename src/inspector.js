@@ -14,6 +14,11 @@ import { deepElementFromPoint } from "./selector.js";
 import { captureElement } from "./screenshot.js";
 import { ensureSidebar, renderSidebar } from "./sidebar.js";
 import { openModal, quickAddTask } from "./modal.js";
+import {
+  openStyleEditor,
+  closeStyleEditor,
+  isStyleEditorOpen,
+} from "./styleeditor.js";
 
 // ---------- Highlight overlay ----------
 
@@ -75,6 +80,7 @@ export const hideSidebar = () => {
   if (refs.sidebar) refs.sidebar.classList.add("tsayru-hidden");
   if (state.inspecting) setInspecting(false);
   state.editingTaskIndex = null;
+  closeStyleEditor();
 };
 
 export const toggleSidebar = () => {
@@ -99,12 +105,51 @@ const isOurChrome = (node) =>
   !!(
     node &&
     node.closest &&
-    node.closest(".tsayru-sidebar, .tsayru-modal-backdrop, .tsayru-highlight")
+    node.closest(
+      ".tsayru-sidebar, .tsayru-modal-backdrop, .tsayru-highlight, .tsayru-style-host",
+    )
   );
 
-const onMouseMove = (e) => {
-  if (!state.inspecting) return;
-  const target = deepElementFromPoint(e.clientX, e.clientY);
+// ⌘+click on macOS, Ctrl+click elsewhere opens the style editor — only while
+// the sidebar is visible, so the gesture is never taken from a page the user
+// isn't working on (hide the sidebar and ⌘+click opens links again).
+const IS_MAC = /mac|iphone|ipad/i.test(
+  navigator.userAgentData?.platform || navigator.platform || "",
+);
+const styleKey = (e) =>
+  (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) &&
+  !e.altKey &&
+  !e.shiftKey;
+const styleGesture = (e) => styleKey(e) && sidebarVisible();
+
+// The click lands on the deepest node — usually the label span or an icon
+// path inside the button the user means. Edit the control (or the whole
+// svg); the panel's breadcrumbs still lead down to the exact node.
+const CONTROL =
+  "a[href], button, [role='button'], [role='link'], [role='tab'], [role='menuitem'], [role='option'], label, summary";
+const pickStyleTarget = (node) => {
+  let n = node;
+  if (typeof SVGElement !== "undefined" && n instanceof SVGElement && n.ownerSVGElement) {
+    n = n.ownerSVGElement;
+  }
+  const control = n.closest?.(CONTROL);
+  if (control && control !== n) {
+    let depth = 0;
+    for (let p = n; p && p !== control; p = p.parentElement) depth++;
+    if (depth <= 3) return control;
+  }
+  return n;
+};
+
+// Holding the key shows what a click would pick.
+let gestureHover = false;
+const lastPointer = { x: -1, y: -1 };
+
+const hoverAt = (x, y) => {
+  // The sidebar auto-opens on dev hosts without the overlay; make sure it exists.
+  ensureOverlay();
+  const deep = deepElementFromPoint(x, y);
+  const target = deep && !state.inspecting ? pickStyleTarget(deep) : deep;
   if (!target || target === state.hovered) return;
   if (isOurChrome(target)) {
     state.hovered = null;
@@ -115,20 +160,51 @@ const onMouseMove = (e) => {
   moveHighlight(target);
 };
 
+const clearGestureHover = () => {
+  if (!gestureHover) return;
+  gestureHover = false;
+  if (state.inspecting) return;
+  state.hovered = null;
+  moveHighlight(null);
+};
+
+const onMouseMove = (e) => {
+  lastPointer.x = e.clientX;
+  lastPointer.y = e.clientY;
+  if (state.inspecting) {
+    hoverAt(e.clientX, e.clientY);
+  } else if (styleGesture(e)) {
+    gestureHover = true;
+    hoverAt(e.clientX, e.clientY);
+  } else {
+    clearGestureHover();
+  }
+};
+
 // Suppress the page's own pointer reactions while inspecting — otherwise a
 // mousedown closes the very dropdown the user is trying to annotate before
 // the click handler ever sees it. (Canceling pointerdown/mousedown does not
 // cancel the subsequent `click`, so onClick below still fires.)
 const onPointerSuppress = (e) => {
-  if (!state.inspecting) return;
+  if (!state.inspecting && !styleGesture(e)) return;
   if (isOurChrome(e.target)) return;
   e.preventDefault();
   e.stopPropagation();
 };
 
 const onClick = async (e) => {
+  if (isOurChrome(e.target)) return;
+  if (styleGesture(e)) {
+    e.preventDefault();
+    e.stopPropagation();
+    const target = deepElementFromPoint(e.clientX, e.clientY);
+    if (!target || isOurChrome(target)) return;
+    if (state.inspecting) setInspecting(false);
+    clearGestureHover();
+    openStyleEditor(pickStyleTarget(target), { deep: target });
+    return;
+  }
   if (!state.inspecting) return;
-  if (e.target.closest(".tsayru-sidebar, .tsayru-modal-backdrop")) return;
   e.preventDefault();
   e.stopPropagation();
   const target = deepElementFromPoint(e.clientX, e.clientY);
@@ -171,7 +247,25 @@ const onKeyDown = (e) => {
   if (e.key === "Escape" && state.inspecting) {
     setInspecting(false);
     moveHighlight(null);
+  } else if (e.key === "Escape" && isStyleEditorOpen()) {
+    // Focus is on the page (the panel handles its own keys): Escape closes
+    // the editor first, before it reaches the page's dialogs.
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    closeStyleEditor();
+  } else if (
+    (e.key === "Meta" || e.key === "Control") &&
+    !state.inspecting &&
+    styleGesture(e) &&
+    lastPointer.x >= 0
+  ) {
+    gestureHover = true;
+    hoverAt(lastPointer.x, lastPointer.y);
   }
+};
+
+const onKeyUp = (e) => {
+  if (e.key === "Meta" || e.key === "Control") clearGestureHover();
 };
 
 export const initEventListeners = () => {
@@ -181,6 +275,8 @@ export const initEventListeners = () => {
   document.addEventListener("mouseup", onPointerSuppress, true);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("keyup", onKeyUp, true);
+  window.addEventListener("blur", clearGestureHover);
   // Modal emits this after a task is added — re-arm the inspector so a batch
   // session is click → type → Enter → click, without re-enabling by hand.
   // Internal bus, NOT a window event: the host page must not be able to
