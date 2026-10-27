@@ -1,27 +1,16 @@
 // Framework detection (React/Vue) via postMessage bridge to inject.js (MAIN world).
 // Snapshot of computed styles is also here — both are "extract context from element" helpers.
 
+import { ask } from "./core.js";
+
 // inject.js is no longer a static <all_urls> content script (fingerprinting +
 // footprint on every site). Ask the background to inject it on demand; the
 // IIFE guard inside inject.js makes repeat injections harmless. Memoized —
 // one round-trip per page. If injection fails (no activeTab / host permission
 // on this page), detection below just times out and resolves null.
 let mainWorldReady = null;
-export const ensureMainWorld = () => {
-  if (!mainWorldReady) {
-    mainWorldReady = new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage({ type: "TSAYRU_INJECT_MAIN" }, (resp) => {
-          void chrome.runtime.lastError; // swallow — detect degrades gracefully
-          resolve(!!resp?.ok);
-        });
-      } catch {
-        resolve(false);
-      }
-    });
-  }
-  return mainWorldReady;
-};
+export const ensureMainWorld = () =>
+  (mainWorldReady ||= ask({ type: "TSAYRU_INJECT_MAIN" }).then((resp) => !!resp.ok));
 
 export const detectFramework = async (target) => {
   if (!(target instanceof Element)) return null;

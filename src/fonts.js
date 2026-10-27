@@ -4,6 +4,7 @@
 // document.fonts directly — no web_accessible_resources for pages to probe.
 // Until they load (or if they never do) the system UI font stands in.
 
+import { ask } from "./core.js";
 import { FONT_FAMILY } from "./theme-css.js";
 
 const FACES = [
@@ -18,17 +19,10 @@ const FACES = [
   },
 ];
 
-const readFont = (file) =>
-  new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_FONT", file }, (resp) => {
-        void chrome.runtime.lastError;
-        resolve(resp?.ok ? resp.data : null);
-      });
-    } catch {
-      resolve(null);
-    }
-  });
+const readFont = async (file) => {
+  const resp = await ask({ type: "TSAYRU_FONT", file });
+  return resp.ok ? resp.data : null;
+};
 
 const toBytes = (base64) => {
   const bin = atob(base64);
@@ -52,3 +46,7 @@ export const ensureFonts = () =>
       await face.load();
     }),
   ).catch((err) => console.warn("[tsayru] UI font failed to load:", err)));
+
+// For the first open: the font, or after `ms` whatever we have.
+export const fontsReady = (ms) =>
+  Promise.race([ensureFonts(), new Promise((resolve) => setTimeout(resolve, ms))]);

@@ -57,6 +57,8 @@ Then load it in Chrome (or any Chromium-based browser — Arc, Brave, Edge):
 4. Done. The tsayru icon appears in your toolbar.
 
 > Hotkey: **`Cmd+Shift+K`** (`Ctrl+Shift+K` on Linux/Windows) toggles the sidebar.
+>
+> The icon opens tsayru on the first click, even in tabs that were open before you installed or updated it — no reload needed. Browser pages (`chrome://`, the Web Store, PDFs) don't allow extensions; the icon shows a red × there.
 
 ---
 
@@ -197,7 +199,7 @@ tsayru/
 │   ├── ui.js            UI shadow host: dialogs, toasts (+ ui-css styles)
 │   ├── shadowhost.js    closed shadow root + event isolation (UI, style editor)
 │   ├── theme-css.js     design tokens: light "chalk" / dark "graphite"
-│   ├── icons.js         inline SVG icons, brand mark, shell speckle
+│   ├── icons.js         inline SVG icons (filled), brand mark, shell speckle
 │   ├── fonts.js         loads Onest into document.fonts
 │   ├── sidebar.js       sidebar UI, copy / clear / send
 │   ├── modal.js         "new task" dialog
@@ -222,7 +224,7 @@ tsayru/
 │   ├── package.json
 │   └── README.md
 │
-├── test/                vitest suites (selector, format, storage, CSS rules, style values/changes)
+├── test/                vitest suites (core sync, selector, format, storage, CSS rules, style values/changes)
 ├── package.json         root build pipeline (esbuild) + tests
 └── README.md            you are here
 ```

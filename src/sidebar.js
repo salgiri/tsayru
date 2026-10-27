@@ -2,7 +2,20 @@
 // modes) and the ship bar (send, copy, clear). Lives in the UI shadow root
 // (ui.js). Also: copy-to-clipboard, inbox posting, done-status polling.
 
-import { el, state, refs, safeHost, plural, persist, IS_MAC } from "./core.js";
+import {
+  el,
+  state,
+  refs,
+  bus,
+  ask,
+  lifetime,
+  safeHost,
+  plural,
+  persist,
+  sidebarVisible,
+  isContextInvalidated,
+  IS_MAC,
+} from "./core.js";
 import { formatTasks, formatTask, filterByHost, taskTags } from "./format.js";
 import { queryDeep } from "./selector.js";
 import {
@@ -16,31 +29,47 @@ import { pickTargetChat } from "./chatpicker.js";
 import { uiLayer, toast, hints } from "./ui.js";
 import { icon, brandMark, grain } from "./icons.js";
 
-export const flash = (msg, opts) => toast(msg, opts);
 const warn = (msg) => toast(msg, { tone: "warn" });
 
-// Surface persist quota / I/O errors from core.js (avoids import cycle).
-window.addEventListener("tsayru-persist-error", (e) => {
-  warn(e?.detail?.message || "Couldn’t save tasks");
+// Storage and screenshot failures (core.js, screenshot.js) and other tabs'
+// edits arrive over the bus — never as window events a page could forge.
+bus.on("warn", warn);
+bus.on("tasks-changed", () => {
+  if (!state.tasks.some((t) => t.id === state.editingTaskId)) state.editingTaskId = null;
+  renderSidebar();
 });
 
-// Surface screenshot-capture failures from screenshot.js (same pattern) —
-// previously a missing activeTab grant just silently dropped the screenshot.
-window.addEventListener("tsayru-capture-error", (e) => {
-  warn(e?.detail?.message || "Screenshot failed");
-});
+// A key that just did its job says so for a moment: its icon becomes a
+// check and its label the past tense ("Copied").
+const confirmKey = (button, label) => {
+  if (button.dataset.confirming) return;
+  button.dataset.confirming = "1";
+  const glyph = button.querySelector("svg");
+  const text = [...button.childNodes].find((n) => n.nodeType === 3);
+  const before = text?.nodeValue;
+  const check = icon("check");
+  check.classList.add("pop");
+  glyph?.replaceWith(check);
+  if (text && label) text.nodeValue = label;
+  setTimeout(() => {
+    check.replaceWith(glyph);
+    if (text) text.nodeValue = before;
+    delete button.dataset.confirming;
+  }, 1200);
+};
 
-const writeClipboard = async (text, okMsg) => {
+const writeClipboard = async (text, okMsg, button, done) => {
   try {
     await navigator.clipboard.writeText(text);
-    flash(okMsg, { iconName: "copy" });
+    toast(okMsg, { iconName: "copy" });
+    if (button) confirmKey(button, done);
   } catch (err) {
     console.warn("[tsayru] clipboard write failed:", err);
     warn("Couldn’t copy to the clipboard. Try again");
   }
 };
 
-const copyAll = async () => {
+const copyAll = async (e) => {
   const tasks = visibleTasks();
   const text = formatTasks(state.tasks, state.filterHost, {
     filterTag: state.filterTag,
@@ -49,17 +78,13 @@ const copyAll = async () => {
     warn("Nothing to copy yet");
     return;
   }
-  await writeClipboard(text, `Copied ${tasks.length} task${plural(tasks.length)}`);
+  await writeClipboard(text, `Copied ${tasks.length} task${plural(tasks.length)}`, e.currentTarget, "Copied");
   // Best-effort inbox save so the copied batch (with screenshots) is also
   // retrievable via MCP when the local server is running. Silent on failure —
   // clipboard already succeeded, which is what the user asked for.
   postBatch(tasks, null).then((p) => {
     if (!p.ok) console.warn("[tsayru] inbox save skipped:", p.error);
   });
-};
-
-const copyOne = async (task, displayIndex) => {
-  await writeClipboard(formatTask(task, displayIndex), "Task copied");
 };
 
 // The current filter scope — what the user actually sees in the list.
@@ -72,66 +97,22 @@ const visibleTasks = () => {
   return list;
 };
 
-const isContextInvalidated = (err) =>
-  /context invalidated|Extension context/i.test(String(err || ""));
-
 // POST batch to the local inbox for audit + future MCP pulls. Best-effort —
 // failure here doesn't block the inject path; we want the chat to receive
 // the markdown even if the inbox server is down.
 const postBatch = (tasks, target) =>
-  new Promise((resolve) => {
-    const payload = {
+  ask({
+    type: "TSAYRU_SEND",
+    path: "/tasks",
+    method: "POST",
+    body: {
       tasks,
       host: location.host,
       filterHost: state.filterHost || null,
       targetTabUrl: target?.url || null,
       targetTabTitle: target?.title || null,
       sentAt: new Date().toISOString(),
-    };
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", path: "/tasks", body: payload, method: "POST" },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve({
-              ok: false,
-              error:
-                resp?.error ||
-                chrome.runtime.lastError?.message ||
-                "no response",
-            });
-            return;
-          }
-          resolve({ ok: true, batchId: resp.data?.batchId });
-        },
-      );
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
-
-const pushToWebChat = (tabId, content, images) =>
-  new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content, images },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve({
-              ok: false,
-              error:
-                resp?.error ||
-                chrome.runtime.lastError?.message ||
-                "no response",
-            });
-            return;
-          }
-          resolve({ ok: true, ...resp });
-        },
-      );
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
+    },
   });
 
 // Push to a selected web-chat tab. The picker only ever returns "online" targets
@@ -155,10 +136,10 @@ const sendBatch = async (tasks, target) => {
   });
   const images = tasks.map((t) => t.screenshot).filter(Boolean);
   // Pasting, uploading screenshots and pressing Send takes a few seconds.
-  flash(`Sending to ${label}…`, { iconName: "send", ttl: 20000 });
-  const inject = await pushToWebChat(target.tabId, md, images);
+  toast(`Sending to ${label}…`, { iconName: "send", ttl: 20000 });
+  const inject = await ask({ type: "TSAYRU_PUSH_CLAUDE_AI", tabId: target.tabId, content: md, images });
   if (inject.ok) {
-    flash(`Sent to ${label}`, { iconName: "send" });
+    toast(`Sent to ${label}`, { iconName: "send" });
     return;
   }
   console.warn("[tsayru] inject failed:", inject.error);
@@ -186,38 +167,27 @@ const sendToServer = async () => {
 // the server exposes the ids; we poll while the sidebar is visible and strike
 // through matching tasks. Silent when the server is down — this is an
 // optional enhancement, not a dependency.
-const pollDoneStatus = () => {
-  if (!refs.sidebar || refs.sidebar.classList.contains("hidden")) return;
-  if (!state.tasks.some((t) => t.id && !t.done)) return;
-  try {
-    chrome.runtime.sendMessage(
-      { type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" },
-      (resp) => {
-        void chrome.runtime.lastError;
-        const ids =
-          resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
-        if (!ids || ids.length === 0) return;
-        const doneIds = new Set(ids);
-        let changed = false;
-        for (const t of state.tasks) {
-          if (t.id && !t.done && doneIds.has(t.id)) {
-            t.done = true;
-            changed = true;
-          }
-        }
-        if (changed) {
-          persist();
-          renderSidebar();
-        }
-      },
-    );
-  } catch {}
+let pollQuietUntil = 0; // no server answering → ask once a minute, not every 10 s
+const pollDoneStatus = async () => {
+  if (!sidebarVisible() || Date.now() < pollQuietUntil || !state.tasks.some((t) => !t.done)) return;
+  const resp = await ask({ type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" });
+  if (!resp.ok) pollQuietUntil = Date.now() + 60000;
+  const ids = new Set(resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : []);
+  let changed = false;
+  for (const t of state.tasks) {
+    if (!t.done && ids.has(t.id)) changed = t.done = true;
+  }
+  if (changed) {
+    persist();
+    renderSidebar();
+  }
 };
 
 let donePollTimer = null;
 const ensureDonePolling = () => {
   if (donePollTimer) return;
   donePollTimer = setInterval(pollDoneStatus, 10000);
+  lifetime.signal.addEventListener("abort", () => clearInterval(donePollTimer));
 };
 
 // Hover-preview: highlight the original element on the page when user hovers a task in the sidebar.
@@ -235,68 +205,48 @@ const onTaskLeave = () => {
   moveHighlight(null);
 };
 
-// Clear with undo instead of a blocking confirm: the snapshot of removed
-// tasks lives until the toast expires (8s), then it's gone for real.
-const clearTasks = () => {
-  if (state.tasks.length === 0) return;
-  // Clears exactly what's on screen (host + tag scope) — undoable below.
-  const removed = visibleTasks();
-  if (removed.length === 0) return;
-  const removedSet = new Set(removed);
-  state.tasks = state.tasks.filter((t) => !removedSet.has(t));
-  state.editingTaskIndex = null;
+// Removals act at once and offer an undo (8 s) instead of a blocking confirm.
+const removeTasks = (removed, message) => {
+  if (!removed.length) return;
+  const at = removed.map((t) => state.tasks.indexOf(t));
+  const gone = new Set(removed);
+  if (removed.some((t) => t.id === state.editingTaskId)) state.editingTaskId = null;
+  state.tasks = state.tasks.filter((t) => !gone.has(t));
   persist();
   renderSidebar();
-  toast(`Cleared ${removed.length} task${plural(removed.length)}`, {
+  toast(message, {
     tone: "danger",
     iconName: "trash",
     action: {
       label: "Undo",
       run: () => {
-        state.tasks.push(...removed);
+        removed.forEach((t, i) => state.tasks.splice(Math.min(at[i], state.tasks.length), 0, t));
         persist();
         renderSidebar();
       },
     },
   });
+};
+
+// Clears exactly what's on screen (host + tag scope).
+const clearTasks = () => {
+  const removed = visibleTasks();
+  removeTasks(removed, `Cleared ${removed.length} task${plural(removed.length)}`);
 };
 
 const actButton = (name, label, onClick, extra = "") =>
   el("button", { class: `act${extra}`, title: label, "aria-label": label, onClick }, icon(name));
 
-// The edit draft survives re-renders (done-status polling, inspector toggles).
+// The edit draft survives re-renders (done-status polling, other tabs' edits).
 let editDraft = null;
 
-const editTask = (idx) => {
-  state.editingTaskIndex = idx;
+const editTask = (task) => {
+  state.editingTaskId = task.id;
   editDraft = null;
   renderSidebar();
 };
 
-// Deleting is one click, so it comes with an undo, like Clear.
-const deleteTask = (idx) => {
-  const [removed] = state.tasks.splice(idx, 1);
-  if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
-  else if (state.editingTaskIndex !== null && state.editingTaskIndex > idx) {
-    state.editingTaskIndex -= 1;
-  }
-  persist();
-  renderSidebar();
-  toast("Task deleted", {
-    tone: "danger",
-    iconName: "trash",
-    action: {
-      label: "Undo",
-      run: () => {
-        state.tasks.splice(Math.min(idx, state.tasks.length), 0, removed);
-        persist();
-        renderSidebar();
-      },
-    },
-  });
-};
-
-const renderEditor = (task, idx) => {
+const renderEditor = (task) => {
   const ta = el("textarea", {
     class: "field",
     rows: 3,
@@ -312,22 +262,20 @@ const renderEditor = (task, idx) => {
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, 0);
 
+  const close = () => {
+    state.editingTaskId = null;
+    editDraft = null;
+    renderSidebar();
+  };
   const save = () => {
     const v = ta.value.trim();
     if (!v) {
       ta.focus();
       return;
     }
-    state.tasks[idx].text = v;
-    state.editingTaskIndex = null;
-    editDraft = null;
+    task.text = v;
     persist();
-    renderSidebar();
-  };
-  const cancel = () => {
-    state.editingTaskIndex = null;
-    editDraft = null;
-    renderSidebar();
+    close();
   };
   // Keys reach fields in the shadow root only through __tsayruKey
   // (shadowhost.js stops them before the page — and element listeners — see them).
@@ -339,7 +287,7 @@ const renderEditor = (task, idx) => {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      cancel();
+      close();
       return true;
     }
     return false;
@@ -352,19 +300,19 @@ const renderEditor = (task, idx) => {
     el(
       "div",
       { class: "edit-ft" },
-      el("button", { class: "btn quiet small", onClick: cancel }, "Cancel", el("span", { class: "kbd-in" }, "Esc")),
+      el("button", { class: "btn quiet small", onClick: close }, "Cancel", el("span", { class: "kbd-in" }, "Esc")),
       el("button", { class: "btn ink small", onClick: save }, "Save", el("span", { class: "kbd-in" }, "↵")),
     ),
   );
 };
 
-const renderTask = (task, idx, displayNum) => {
-  const editing = state.editingTaskIndex === idx;
+const renderTask = (task, displayNum, entering) => {
+  const editing = state.editingTaskId === task.id;
   const styleTask = !!task.styleChanges?.length;
   return el(
     "div",
     {
-      class: "task" + (task.done ? " done" : "") + (editing ? " editing" : ""),
+      class: "task" + (task.done ? " done" : "") + (editing ? " editing" : "") + (entering ? " enter" : ""),
       onMouseEnter: () => onTaskHover(task.selector),
       onMouseLeave: onTaskLeave,
     },
@@ -385,14 +333,16 @@ const renderTask = (task, idx, displayNum) => {
           : el(
               "div",
               { class: "acts" },
-              actButton("copy", "Copy this task", () => copyOne(task, displayNum)),
-              actButton("edit", "Edit task", () => editTask(idx)),
-              actButton("close", "Delete task", () => deleteTask(idx), " danger"),
+              actButton("copy", "Copy this task", (e) =>
+                writeClipboard(formatTask(task, displayNum), "Task copied", e.currentTarget),
+              ),
+              actButton("edit", "Edit task", () => editTask(task)),
+              actButton("close", "Delete task", () => removeTasks([task], "Task deleted"), " danger"),
             ),
       ),
       el("div", { class: "sel", title: task.selector }, task.selector),
       editing
-        ? renderEditor(task, idx)
+        ? renderEditor(task)
         : // Style-editor tasks speak through their change list; no nag for text.
           task.text || !styleTask
           ? el("div", { class: "text" + (task.text ? "" : " empty") }, task.text || "No note yet")
@@ -519,13 +469,19 @@ const renderEmpty = (list) => {
   );
 };
 
-const renderDeck = () => {
+// The pick keys only — toggling picking doesn't rebuild the task list.
+export const renderDeck = () => {
+  if (!refs.sidebar) return;
   const picking = state.inspecting;
   const styling = picking && state.pickMode === "style";
   const pick = refs.sidebar.querySelector(".pick");
   pick.classList.toggle("on", picking);
   pick.setAttribute("aria-pressed", String(picking));
-  pick.querySelector(".disc").replaceChildren(icon(styling ? "sliders" : "target"));
+  const glyph = styling ? "sliders" : "target";
+  if (pick.dataset.glyph !== glyph) {
+    pick.dataset.glyph = glyph;
+    pick.querySelector(".disc").replaceChildren(icon(glyph));
+  }
   pick.querySelector(".pick-title").textContent = !picking
     ? "Pick an element"
     : styling
@@ -538,7 +494,8 @@ const renderDeck = () => {
   restyle.setAttribute("aria-pressed", String(styling));
 };
 
-export const renderSidebar = () => {
+// `enter`: the id of a task that just arrived — it slides into its row once.
+export const renderSidebar = ({ enter } = {}) => {
   if (!refs.sidebar) return;
   const list = refs.sidebar.querySelector(".list");
   list.replaceChildren();
@@ -562,12 +519,9 @@ export const renderSidebar = () => {
   if (filtered.length === 0) {
     renderEmpty(list);
   } else {
-    filtered.forEach((task, fi) => {
-      const idx = state.tasks.indexOf(task);
-      // Display number is filter-relative — matches what `formatTasks` writes
-      // into clipboard markdown so badge and `## N. label` always agree.
-      list.appendChild(renderTask(task, idx, fi + 1));
-    });
+    // Display number is filter-relative — matches what `formatTasks` writes
+    // into clipboard markdown so badge and `## N. label` always agree.
+    filtered.forEach((task, i) => list.appendChild(renderTask(task, i + 1, task.id === enter)));
   }
 
   const n = state.tasks.length;
@@ -613,7 +567,7 @@ export const ensureSidebar = () => {
           title: "Click an element on the page to add a task about it",
           onClick: () => toggleInspector(),
         },
-        el("span", { class: "disc" }, icon("target")),
+        el("span", { class: "disc" }),
         el(
           "span",
           { class: "pick-label" },
@@ -670,5 +624,4 @@ export const ensureSidebar = () => {
   );
   uiLayer().appendChild(refs.sidebar);
   ensureDonePolling();
-  renderSidebar();
 };

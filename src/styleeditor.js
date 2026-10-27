@@ -10,7 +10,7 @@
 // forced states, saving, and the panel's isolated host. The panel's UI lives
 // in stylepanel.js / stylequick.js / stylerules.js.
 
-import { el, state, refs, persist, sidebarVisible } from "./core.js";
+import { el, state, refs, persist, uid, sidebarVisible } from "./core.js";
 import { buildSelector, shortLabel } from "./selector.js";
 import {
   detectFramework,
@@ -19,7 +19,8 @@ import {
   snapshotEnv,
 } from "./framework.js";
 import { captureElement } from "./screenshot.js";
-import { renderSidebar, flash } from "./sidebar.js";
+import { renderSidebar } from "./sidebar.js";
+import { toast } from "./ui.js";
 import {
   collectRules,
   groupByState,
@@ -480,7 +481,7 @@ const applySave = (s, { note, existing, merged }, { framework = null, screenshot
     if (!merged.length && !existing.text) state.tasks.splice(state.tasks.indexOf(existing), 1);
   } else {
     state.tasks.push({
-      id: crypto.randomUUID(),
+      id: uid(),
       selector: s.selector,
       label: `Style: ${s.label}`,
       text: note,
@@ -510,7 +511,7 @@ const saveSession = async (s) => {
   renderSidebar();
   const n = plan.merged.length;
   const what = `${n} change${n === 1 ? "" : "s"}`;
-  flash(plan.existing ? `Style task updated: ${what}` : `Style task saved: ${what}`, { iconName: "sliders" });
+  toast(plan.existing ? `Style task updated: ${what}` : `Style task saved: ${what}`, { iconName: "sliders" });
 };
 
 // Reloading with the panel open must not lose the edits: record them
@@ -701,7 +702,7 @@ const finish = async (s, { save }) => {
       await saveSession(s);
     } catch (err) {
       console.warn("[tsayru] saving style task failed:", err);
-      flash("Couldn’t save the style task. Close the editor again to retry", { tone: "warn" });
+      toast("Couldn’t save the style task. Close the editor again to retry", { tone: "warn" });
     }
   }
   force(s, null);

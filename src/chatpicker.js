@@ -9,41 +9,17 @@
 //   null      — cancelled
 //   OnlineTab — { kind: "online", tabId, url, title, lastAccessed }
 
-import { el, IS_MAC } from "./core.js";
+import { el, ask, isContextInvalidated, IS_MAC } from "./core.js";
 import { openDialog, dialogHeader } from "./ui.js";
 import { icon } from "./icons.js";
 
-// Re-used to detect the "old content script in a reloaded extension" footgun.
-const isContextInvalidated = (err) =>
-  /context invalidated|Extension context/i.test(String(err || ""));
-
-const fetchOnlineTabs = () =>
-  new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_LIST_TABS" }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
-          resolve({
-            ok: false,
-            error:
-              resp?.error ||
-              chrome.runtime.lastError?.message ||
-              "no response",
-          });
-          return;
-        }
-        resolve({ ok: true, tabs: resp.tabs || [] });
-      });
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
+const fetchOnlineTabs = async () => {
+  const resp = await ask({ type: "TSAYRU_LIST_TABS" });
+  return resp.ok ? { ok: true, tabs: resp.tabs || [] } : resp;
+};
 
 // Opened through the background: the host page's CSP can't get in the way.
-const openTab = (url) => {
-  try {
-    chrome.runtime.sendMessage({ type: "TSAYRU_OPEN_TAB", url });
-  } catch {}
-};
+const openTab = (url) => ask({ type: "TSAYRU_OPEN_TAB", url });
 
 const renderItem = (entry, onPick) => {
   let urlLabel = entry.url;

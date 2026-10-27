@@ -2,7 +2,7 @@
 // then crop on canvas to the element's bounding rect with padding.
 // Hides the extension's own UI before capture so it doesn't appear in the shot.
 
-import { refs } from "./core.js";
+import { refs, bus, ask } from "./core.js";
 
 // Generous context around the element (48px instead of the old 8): Claude
 // understands "this button" far better when neighboring UI is visible. The
@@ -15,23 +15,10 @@ const MAX_WIDTH = 800; // CSS px — resize down if cropped wider than this
 // and keeps web-chat attachments light. Screenshots of UI don't need lossless.
 const JPEG_QUALITY = 0.85;
 
-const requestFullCapture = () =>
-  new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_CAPTURE" }, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({ dataUrl: null, error: chrome.runtime.lastError.message });
-          return;
-        }
-        resolve({
-          dataUrl: resp?.dataUrl || null,
-          error: resp?.dataUrl ? null : resp?.error || "no response",
-        });
-      });
-    } catch (err) {
-      resolve({ dataUrl: null, error: String(err) });
-    }
-  });
+const requestFullCapture = async () => {
+  const resp = await ask({ type: "TSAYRU_CAPTURE" });
+  return { dataUrl: resp.dataUrl || null, error: resp.dataUrl ? null : resp.error || "no response" };
+};
 
 // Map raw chrome error strings to something the user can act on.
 const captureErrorMessage = (raw) => {
@@ -45,15 +32,9 @@ const captureErrorMessage = (raw) => {
   return "Screenshot failed. The task is saved without it";
 };
 
-// Surface capture failures to the UI without importing the toast helper
-// (same CustomEvent pattern as persist errors — avoids a cycle with sidebar.js).
-const reportCaptureError = (raw) => {
-  window.dispatchEvent(
-    new CustomEvent("tsayru-capture-error", {
-      detail: { message: captureErrorMessage(raw) },
-    }),
-  );
-};
+// Surfaced as a toast through the in-bundle bus — previously a missing
+// activeTab grant just silently dropped the screenshot.
+const reportCaptureError = (raw) => bus.emit("warn", captureErrorMessage(raw));
 
 const loadImage = (dataUrl) =>
   new Promise((resolve) => {

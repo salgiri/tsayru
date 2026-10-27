@@ -7,6 +7,8 @@
 // by inject.js in the MAIN world once the inspector is used; the two buffers
 // are merged at task-creation time (inspector.js).
 
+import { on } from "./core.js";
+
 const MAX_ERRORS = 10;
 const buffer = [];
 
@@ -30,7 +32,7 @@ const push = (message, source) => {
 };
 
 export const initErrorCapture = () => {
-  window.addEventListener("error", (e) => {
+  on(window, "error", (e) => {
     // Resource load failures (img 404 etc.) have no message — too noisy.
     if (!e.message) return;
     push(e.message, shortSource(e.filename, e.lineno));

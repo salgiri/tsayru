@@ -1,7 +1,7 @@
 // Task dialog — shown after a click in inspector mode.
 // Fires framework detection in parallel; styles snapshot is captured upstream and passed in.
 
-import { el, state, refs, persist, bus, IS_MAC } from "./core.js";
+import { el, state, refs, persist, bus, uid, IS_MAC } from "./core.js";
 import { buildSelector, shortLabel } from "./selector.js";
 import { detectFramework } from "./framework.js";
 import { renderSidebar } from "./sidebar.js";
@@ -33,9 +33,10 @@ const addTask = async (selector, label, text, frameworkPromise, ctx) => {
     frameworkPromise || Promise.resolve(null),
     new Promise((resolve) => setTimeout(() => resolve(null), 250)),
   ]);
+  const id = uid();
   state.tasks.push({
     // Stable id — the done-status sync from the server matches on it.
-    id: crypto.randomUUID(),
+    id,
     selector,
     label,
     text,
@@ -50,7 +51,7 @@ const addTask = async (selector, label, text, frameworkPromise, ctx) => {
     addedAt: new Date().toISOString(),
   });
   await persist();
-  renderSidebar();
+  renderSidebar({ enter: id });
   // Re-arm the inspector for the next element (handled in inspector.js).
   bus.emit("task-added");
 };

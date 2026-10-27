@@ -1,9 +1,26 @@
+// Toolbar icon / hotkey → toggle the sidebar in the tab. When nobody answers
+// (a tab opened before the extension was installed or updated — its old
+// content script is cut off), inject a fresh copy right there: the click
+// granted activeTab. The copy takes over from the stale one (src/index.js),
+// so the first click works without reloading the page.
+const toggle = (tabId) => chrome.tabs.sendMessage(tabId, { type: "TSAYRU_TOGGLE" });
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id) return;
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: "TSAYRU_TOGGLE" });
-  } catch (err) {
-    console.warn("[tsayru] toggle failed:", err);
+    await toggle(tab.id);
+  } catch {
+    try {
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ["content.css"] });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+      await toggle(tab.id);
+    } catch (err) {
+      // chrome://, the Web Store, PDFs: no extension may run there. Say so on the icon.
+      console.warn("[tsayru] can't open on this page:", err?.message || err);
+      await chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: "#d02c2a" });
+      await chrome.action.setBadgeText({ tabId: tab.id, text: "×" });
+      setTimeout(() => chrome.action.setBadgeText({ tabId: tab.id, text: "" }).catch(() => {}), 2500);
+    }
   }
 });
 

@@ -1,7 +1,7 @@
 // Inspector mode: highlight overlay, mouse/click/keyboard handlers.
 // Sidebar visibility (show/hide/toggle) — kept here because hiding the panel must turn off inspector.
 
-import { el, state, refs, bus, sidebarVisible, IS_MAC } from "./core.js";
+import { el, state, refs, bus, on, sidebarVisible, IS_MAC, restore, watchTasks } from "./core.js";
 import {
   snapshotComputedStyles,
   snapshotHtml,
@@ -13,9 +13,10 @@ import { recentContentErrors } from "./errors.js";
 import { deepElementFromPoint } from "./selector.js";
 import { isOurHost } from "./shadowhost.js";
 import { uiLayer } from "./ui.js";
+import { fontsReady } from "./fonts.js";
 import { describeNode } from "./stylewidgets.js";
 import { captureElement } from "./screenshot.js";
-import { ensureSidebar, renderSidebar } from "./sidebar.js";
+import { ensureSidebar, renderSidebar, renderDeck } from "./sidebar.js";
 import { openModal, quickAddTask } from "./modal.js";
 import {
   openStyleEditor,
@@ -83,48 +84,63 @@ export const setInspecting = (on, mode = "task") => {
   // Warm up the MAIN-world fiber probe so the first click's framework
   // detection doesn't race the lazy injection.
   if (on) ensureMainWorld();
-  renderSidebar();
+  renderDeck();
 };
 
 // ---------- Sidebar visibility ----------
 // Hiding the sidebar always turns inspector OFF (safety: no crosshair without UI).
 
-export const showSidebar = () => {
+// Opening reads the tasks fresh (another tab may have changed them) and, the
+// first time, waits a moment for the UI font so the panel never re-flows in
+// front of the user. Both take milliseconds; the toolbar click itself costs more.
+let fontsWaited = false;
+const open = async () => {
+  ensureListeners();
+  await Promise.all([restore(), fontsWaited || fontsReady(150)]);
+  fontsWaited = true;
   ensureOverlay();
   ensureSidebar();
+  renderSidebar();
   refs.sidebar.classList.remove("hidden");
+  watchTasks(true);
+};
+
+// The panel ends up the way the last request asked, however the async
+// opening interleaves with rapid toggles.
+let wanted = false;
+let opening = null;
+
+export const showSidebar = () => {
+  wanted = true;
+  if (sidebarVisible()) return Promise.resolve();
+  opening ||= open().finally(() => {
+    opening = null;
+    if (!wanted) hideSidebar();
+  });
+  return opening;
 };
 
 export const hideSidebar = () => {
+  wanted = false;
+  watchTasks(false);
   if (refs.sidebar) refs.sidebar.classList.add("hidden");
   if (state.inspecting) setInspecting(false);
   moveHighlight(null); // a hover preview lives outside the panel
-
-  state.editingTaskIndex = null;
+  state.editingTaskId = null;
   closeStyleEditor();
 };
 
-export const toggleSidebar = () => {
-  ensureOverlay();
-  ensureSidebar();
-  if (refs.sidebar.classList.contains("hidden")) {
-    showSidebar();
-  } else {
-    hideSidebar();
-  }
-};
+// Toolbar icon / hotkey. The first press on a page opens the panel — it used
+// to create it and hide it again in the same call, so it took two clicks.
+export const toggleSidebar = () => (wanted ? hideSidebar() : showSidebar());
 
 // The sidebar's keys — the only switches for inspector state. Each one stops
 // its own mode and switches over from the other.
-export const toggleInspector = () => {
-  showSidebar();
+export const toggleInspector = () =>
   setInspecting(!(state.inspecting && state.pickMode === "task"), "task");
-};
 
-export const toggleStylePick = () => {
-  showSidebar();
+export const toggleStylePick = () =>
   setInspecting(!(state.inspecting && state.pickMode === "style"), "style");
-};
 
 // ---------- Event handlers ----------
 
@@ -293,15 +309,20 @@ const onKeyUp = (e) => {
   if (e.key === "Meta" || e.key === "Control") clearGestureHover();
 };
 
-export const initEventListeners = () => {
-  document.addEventListener("mousemove", onMouseMove, true);
-  document.addEventListener("pointerdown", onPointerSuppress, true);
-  document.addEventListener("mousedown", onPointerSuppress, true);
-  document.addEventListener("mouseup", onPointerSuppress, true);
-  document.addEventListener("click", onClick, true);
-  document.addEventListener("keydown", onKeyDown, true);
-  document.addEventListener("keyup", onKeyUp, true);
-  window.addEventListener("blur", clearGestureHover);
+// Registered the first time the sidebar opens: a page where tsayru is never
+// used pays nothing for it beyond loading the script.
+let listening = false;
+const ensureListeners = () => {
+  if (listening) return;
+  listening = true;
+  on(document, "mousemove", onMouseMove, true);
+  on(document, "pointerdown", onPointerSuppress, true);
+  on(document, "mousedown", onPointerSuppress, true);
+  on(document, "mouseup", onPointerSuppress, true);
+  on(document, "click", onClick, true);
+  on(document, "keydown", onKeyDown, true);
+  on(document, "keyup", onKeyUp, true);
+  on(window, "blur", clearGestureHover);
   // Keys typed while focus is in our UI never reach the document listeners
   // above (shadowhost.js stops them); ui.js hands over the ones it didn't use.
   bus.on("ui-key", (e) => (e.type === "keyup" ? onKeyUp(e) : e.type === "keydown" && onKeyDown(e)));
@@ -317,6 +338,6 @@ export const initEventListeners = () => {
   const follow = () => {
     if (shown) moveHighlight(shown.isConnected ? shown : null);
   };
-  window.addEventListener("scroll", follow, true);
-  window.addEventListener("resize", follow);
+  on(window, "scroll", follow, true);
+  on(window, "resize", follow);
 };

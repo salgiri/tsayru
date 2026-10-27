@@ -197,13 +197,14 @@
 
   // src/core.js
   var STORAGE_KEY = "tsayru_tasks";
+  var REV_KEY = "tsayru_rev";
   var state = {
     inspecting: false,
     pickMode: "task",
     // what an inspector click does: "task" (modal) or "style" (style editor)
     hovered: null,
     tasks: [],
-    editingTaskIndex: null,
+    editingTaskId: null,
     filterHost: null,
     filterTag: null
   };
@@ -220,6 +221,8 @@
   var IS_MAC = /mac|iphone|ipad/i.test(
     navigator.userAgentData?.platform || navigator.platform || ""
   );
+  var lifetime = new AbortController();
+  var on = (target, type, fn, capture = false) => target.addEventListener(type, fn, { capture, signal: lifetime.signal });
   var busHandlers = {};
   var bus = {
     on(evt, fn) {
@@ -234,6 +237,18 @@
       }
     }
   };
+  var ask = (msg) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(msg, (resp) => {
+        const error = chrome.runtime.lastError?.message;
+        resolve(resp ?? { ok: false, error: error || "no response" });
+      });
+    } catch (err) {
+      resolve({ ok: false, error: String(err) });
+    }
+  });
+  var uid = () => crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+  var isContextInvalidated = (err) => /context invalidated|Extension context/i.test(String(err || ""));
   var el = (tag, attrs = {}, ...children) => {
     const node = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -255,30 +270,48 @@
     if (!h) return location.protocol === "file:";
     return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "0.0.0.0" || h.endsWith(".local") || h.endsWith(".localhost") || h.endsWith(".test");
   };
+  var writer = uid();
+  var writes = 0;
   var persist = async () => {
     try {
-      await chrome.storage?.local?.set({ [STORAGE_KEY]: state.tasks });
+      await chrome.storage?.local?.set({
+        [STORAGE_KEY]: state.tasks,
+        [REV_KEY]: `${writer}:${++writes}`
+      });
       return true;
     } catch (err) {
       const msg = err?.message || String(err);
       const quota = /quota/i.test(msg) || msg.includes("QUOTA_BYTES");
       console.warn("[tsayru] persist failed:", msg);
-      window.dispatchEvent(
-        new CustomEvent("tsayru-persist-error", {
-          detail: {
-            message: quota ? "Storage is full. Delete old tasks to save new ones" : "Couldn\u2019t save tasks. Reload the page and try again"
-          }
-        })
+      bus.emit(
+        "warn",
+        quota ? "Storage is full. Delete old tasks to save new ones" : "Couldn\u2019t save tasks. Reload the page and try again"
       );
       return false;
     }
   };
+  var withIds = (list) => {
+    const tasks = Array.isArray(list) ? list : [];
+    for (const t of tasks) t.id ||= uid();
+    return tasks;
+  };
   var restore = async () => {
     try {
       const data = await chrome.storage?.local?.get(STORAGE_KEY);
-      if (data && Array.isArray(data[STORAGE_KEY])) {
-        state.tasks = data[STORAGE_KEY];
-      }
+      state.tasks = withIds(data?.[STORAGE_KEY]);
+    } catch {
+    }
+  };
+  var onStorageChange = (changes, area) => {
+    if (area !== "local" || !changes[STORAGE_KEY]) return;
+    if (String(changes[REV_KEY]?.newValue || "").startsWith(`${writer}:`)) return;
+    state.tasks = withIds(changes[STORAGE_KEY].newValue);
+    bus.emit("tasks-changed");
+  };
+  var watchTasks = (enabled) => {
+    try {
+      if (enabled) chrome.storage.onChanged.addListener(onStorageChange);
+      else chrome.storage.onChanged.removeListener(onStorageChange);
     } catch {
     }
   };
@@ -304,7 +337,7 @@
     if (buffer.length > MAX_ERRORS) buffer.shift();
   };
   var initErrorCapture = () => {
-    window.addEventListener("error", (e) => {
+    on(window, "error", (e) => {
       if (!e.message) return;
       push(e.message, shortSource(e.filename, e.lineno));
     });
@@ -321,21 +354,7 @@
 
   // src/framework.js
   var mainWorldReady = null;
-  var ensureMainWorld = () => {
-    if (!mainWorldReady) {
-      mainWorldReady = new Promise((resolve) => {
-        try {
-          chrome.runtime.sendMessage({ type: "TSAYRU_INJECT_MAIN" }, (resp) => {
-            void chrome.runtime.lastError;
-            resolve(!!resp?.ok);
-          });
-        } catch {
-          resolve(false);
-        }
-      });
-    }
-    return mainWorldReady;
-  };
+  var ensureMainWorld = () => mainWorldReady ||= ask({ type: "TSAYRU_INJECT_MAIN" }).then((resp) => !!resp.ok);
   var detectFramework = async (target) => {
     if (!(target instanceof Element)) return null;
     await ensureMainWorld();
@@ -609,11 +628,12 @@
       const into = e.type === "focusin" ? e.target === node : e.relatedTarget === node;
       if (into) e.stopImmediatePropagation();
     };
+    const opts = { capture: true, signal: lifetime.signal };
     for (const type of ["keydown", "keyup", "keypress"]) {
-      window.addEventListener(type, onWindowKey, true);
+      window.addEventListener(type, onWindowKey, opts);
     }
-    window.addEventListener("focusin", onWindowFocus, true);
-    window.addEventListener("focusout", onWindowFocus, true);
+    window.addEventListener("focusin", onWindowFocus, opts);
+    window.addEventListener("focusout", onWindowFocus, opts);
     document.documentElement.appendChild(node);
     return {
       node,
@@ -744,7 +764,7 @@ svg.i {
   flex: none;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -807,13 +827,17 @@ svg.i .fill { fill: currentColor; stroke: none; }
   border-radius: 32px;
   overflow: hidden;
   pointer-events: auto;
-  transition: transform 300ms var(--ease-out), opacity 200ms ease-out, visibility 0s;
+  transition: transform 240ms var(--ease-out), opacity 160ms ease-out, visibility 0s;
+}
+/* First open on a page: slide in from where it will later hide to. */
+@starting-style {
+  .panel:not(.hidden) { transform: translateX(32px); opacity: 0; }
 }
 .panel.hidden {
   transform: translateX(calc(100% + 24px));
   opacity: 0;
   visibility: hidden;
-  transition: transform 180ms ease-out, opacity 180ms ease-out, visibility 0s 180ms;
+  transition: transform 160ms ease-out, opacity 160ms ease-out, visibility 0s 160ms;
 }
 
 .hd {
@@ -1127,6 +1151,9 @@ svg.i .fill { fill: currentColor; stroke: none; }
 }
 .chip svg.i { width: 14px; height: 14px; stroke-width: 2.4; }
 .props { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A task that just arrived settles into its row. */
+.task.enter { animation: row-in 260ms var(--ease-out); }
+@keyframes row-in { from { opacity: 0; transform: translateY(-6px); filter: blur(4px); } }
 .task.done .num { background: var(--well); color: var(--text-2); }
 .task.done .label,
 .task.done .text { color: var(--text-3); }
@@ -1231,6 +1258,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
 .btn.ink { background: var(--ink); color: var(--on-ink); }
 .btn.small { height: 38px; padding: 0 14px; border-radius: 12px; font-size: 13.5px; }
 
+/* A key confirming what it just did ("Copied"): the check pops in. */
+svg.i.pop { animation: pop 300ms cubic-bezier(0.2, 0, 0, 1); }
+@keyframes pop { from { opacity: 0; scale: 0.25; filter: blur(4px); } }
+
 /* Press: every key gives way a little, the instant it's pressed. */
 :is(.round, .pick, .square, .send, .btn, .toast-act):not(:disabled):active { scale: 0.96; }
 
@@ -1275,6 +1306,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(12px); filter: blur(4px); }
 }
+.toast.out { animation: toast-out 150ms ease-out forwards; }
+@keyframes toast-out {
+  to { opacity: 0; transform: translateX(-50%) translateY(8px); filter: blur(4px); }
+}
 
 /* ---------- dialogs ---------- */
 
@@ -1300,6 +1335,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
   animation: dialog-in 240ms var(--ease-out);
 }
 @keyframes dialog-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+.scrim.out { animation: fade-out 150ms ease-out forwards; }
+.scrim.out .dialog { animation: dialog-out 150ms ease-out forwards; }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes dialog-out { to { opacity: 0; transform: scale(0.98); } }
 .dlg-hd { display: flex; align-items: center; gap: 10px; padding: 2px 0 0 6px; }
 .dlg-title { flex: 1; font-size: 21px; font-weight: 700; letter-spacing: -0.02em; text-wrap: balance; }
 .target {
@@ -1465,13 +1504,21 @@ svg.i .fill { fill: currentColor; stroke: none; }
   .shot { outline-color: oklch(1 0 0 / 0.1); }
 }
 
-/* Reduced motion: entrances fade in place, nothing pulses or spins. */
+/* Reduced motion: entrances and exits fade in place, nothing pulses or spins. */
 @media (prefers-reduced-motion: reduce) {
   .dialog,
-  .toast { animation-name: fade; }
+  .toast,
+  .task.enter,
+  svg.i.pop { animation-name: fade; }
+  .toast.out,
+  .scrim.out,
+  .scrim.out .dialog { animation-name: fade-out; }
   .led,
   .pick.on .disc svg.i { animation: none; }
   .panel.hidden { transform: none; }
+  @starting-style {
+    .panel:not(.hidden) { transform: none; }
+  }
 }
 `;
 
@@ -1486,16 +1533,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
       unicodeRange: "U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116"
     }
   ];
-  var readFont = (file) => new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_FONT", file }, (resp) => {
-        void chrome.runtime.lastError;
-        resolve(resp?.ok ? resp.data : null);
-      });
-    } catch {
-      resolve(null);
-    }
-  });
+  var readFont = async (file) => {
+    const resp = await ask({ type: "TSAYRU_FONT", file });
+    return resp.ok ? resp.data : null;
+  };
   var toBytes = (base64) => {
     const bin = atob(base64);
     const bytes = new Uint8Array(bin.length);
@@ -1515,6 +1556,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
       await face.load();
     })
   ).catch((err) => console.warn("[tsayru] UI font failed to load:", err));
+  var fontsReady = (ms) => Promise.race([ensureFonts(), new Promise((resolve) => setTimeout(resolve, ms))]);
 
   // src/icons.js
   var NS = "http://www.w3.org/2000/svg";
@@ -1525,33 +1567,48 @@ svg.i .fill { fill: currentColor; stroke: none; }
     return node;
   };
   var path = (d) => svg({ tag: "path", d });
-  var circle = (cx, cy, r, fill) => svg({ tag: "circle", cx, cy, r, ...fill ? { class: "fill" } : {} });
-  var rect = (x, y, width, height, rx) => svg({ tag: "rect", x, y, width, height, rx });
+  var solid = (d) => svg({ tag: "path", d, class: "fill", "fill-rule": "evenodd" });
+  var dot = (cx, cy, r) => svg({ tag: "circle", cx, cy, r, class: "fill" });
   var ICONS = {
-    target: () => [circle(12, 12, 7.5), circle(12, 12, 2.6, true), path("M12 1.5V5M12 19v3.5M1.5 12H5M19 12h3.5")],
-    sliders: () => [path("M4 7h8.5M17.5 7H20M4 17h2.5M11.5 17H20"), circle(15, 7, 2.5), circle(9, 17, 2.5)],
-    send: () => [path("M21 3 10.5 13.5"), path("M21 3 14.5 21l-4-7.5L3 9.5z")],
+    // bullseye with sight marks
+    target: () => [
+      solid("M4.5 12a7.5 7.5 0 1 0 15 0a7.5 7.5 0 1 0-15 0ZM7.4 12a4.6 4.6 0 1 0 9.2 0a4.6 4.6 0 1 0-9.2 0Z"),
+      dot(12, 12, 2.3),
+      path("M12 1.5V4M12 20v2.5M1.5 12H4M20 12h2.5")
+    ],
+    sliders: () => [path("M3.5 7h17M3.5 17h17"), dot(15, 7, 3.2), dot(9, 17, 3.2)],
+    // paper plane, the fold cut out
+    send: () => [
+      solid(
+        "M20.9 3.1a.9.9 0 0 1 .2 1L14.6 20.6a1 1 0 0 1-1.8.1l-3-6.4-6.4-3a1 1 0 0 1 .1-1.8l16.5-6.5a.9.9 0 0 1 .9.1ZM19.9 3.5l.6.6-9.6 9.6-.6-.6Z"
+      )
+    ],
     copy: () => [
-      rect(8.5, 8.5, 12, 12, 3),
-      path("M15.5 8.5v-2a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v6a3 3 0 0 0 3 3h2")
+      svg({ tag: "rect", x: 8.5, y: 8.5, width: 12, height: 12, rx: 3, class: "fill" }),
+      path("M15.5 6v-.5A2.5 2.5 0 0 0 13 3H5.5A2.5 2.5 0 0 0 3 5.5V13a2.5 2.5 0 0 0 2.5 2.5H6")
     ],
     trash: () => [
-      path("M4 6.5h16"),
-      path("M9.5 6.5v-2A1.5 1.5 0 0 1 11 3h2a1.5 1.5 0 0 1 1.5 1.5v2"),
-      path("m6 6.5.9 12.6a2 2 0 0 0 2 1.9h6.2a2 2 0 0 0 2-1.9L18 6.5")
+      path("M3.5 6.5h17M9.5 6.5V5a2 2 0 0 1 2-2h1a2 2 0 0 1 2 2v1.5"),
+      solid("M5.7 8.5h12.6l-.85 11.2a2 2 0 0 1-2 1.8H8.55a2 2 0 0 1-2-1.8ZM9.6 11.5h1.3V18H9.6ZM13.1 11.5h1.3V18h-1.3Z")
     ],
     hide: () => [path("m9.5 6 6 6-6 6")],
     close: () => [path("m6.5 6.5 11 11M17.5 6.5l-11 11")],
-    edit: () => [path("m4 20 1-4.5L15.8 4.7a2.1 2.1 0 0 1 3 0l.5.5a2.1 2.1 0 0 1 0 3L8.5 19z"), path("m13.5 7 3.5 3.5")],
+    // pencil, the ferrule seam cut out
+    edit: () => [
+      solid(
+        "M14.6 4.9a2.3 2.3 0 0 1 3.25 0l1.25 1.25a2.3 2.3 0 0 1 0 3.25L8.9 19.6l-4.6 1.1a.8.8 0 0 1-1-1l1.1-4.6ZM12.9 6.9l.6-.6 4.2 4.2-.6.6Z"
+      )
+    ],
     check: () => [path("m5 12.5 4.5 4.5L19 7")],
     chat: () => [
-      path("M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17A1.5 1.5 0 0 1 4 15.5z")
+      solid("M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17A1.5 1.5 0 0 1 4 15.5Z")
     ],
     hash: () => [path("M5 9h14M5 15h14M10 4 8 20M16 4l-2 16")],
+    // triangle, the exclamation mark cut out
     alert: () => [
-      path("M10.3 3.9 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"),
-      path("M12 9.5v4"),
-      path("M12 17h.01")
+      solid(
+        "M10.3 3.9 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0ZM11 8.8h2v5.4h-2ZM12 15.6a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4Z"
+      )
     ],
     external: () => [path("M14 4h6v6M20 4l-9 9"), path("M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4")]
   };
@@ -1602,6 +1659,11 @@ svg.i .fill { fill: currentColor; stroke: none; }
     e.stopImmediatePropagation();
     dialogs[dialogs.length - 1].onEscape();
   };
+  var leave = (node) => {
+    node.classList.add("out");
+    node.inert = true;
+    setTimeout(() => node.remove(), 160);
+  };
   var uiLayer = () => {
     if (layer) return layer;
     host = createShadowHost({
@@ -1639,14 +1701,16 @@ svg.i .fill { fill: currentColor; stroke: none; }
     );
     const entry = { onEscape };
     dialogs.push(entry);
-    if (dialogs.length === 1) window.addEventListener("keydown", onPageEscape, true);
+    if (dialogs.length === 1) {
+      window.addEventListener("keydown", onPageEscape, { capture: true, signal: lifetime.signal });
+    }
     if (refs.sidebar) refs.sidebar.inert = true;
     layer.appendChild(scrim);
     return {
       scrim,
       dialog: dialog2,
       close() {
-        scrim.remove();
+        leave(scrim);
         const i = dialogs.indexOf(entry);
         if (i >= 0) dialogs.splice(i, 1);
         if (!dialogs.length) {
@@ -1666,7 +1730,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
   var current = null;
   var toast = (message, { tone, warn: warn2 = false, iconName, action, ttl } = {}) => {
     uiLayer();
-    current?.dismiss();
+    current?.dismiss(true);
     if (warn2) tone = "warn";
     const node = el(
       "div",
@@ -1682,10 +1746,11 @@ svg.i .fill { fill: currentColor; stroke: none; }
       timer = setTimeout(() => self.dismiss(), life);
     };
     const self = {
-      dismiss() {
+      dismiss(instant) {
         clearTimeout(timer);
-        node.remove();
         if (current === self) current = null;
+        if (instant) node.remove();
+        else leave(node);
       }
     };
     if (action) {
@@ -1768,9 +1833,9 @@ svg.i .fill { fill: currentColor; stroke: none; }
     return out.map((p) => p.trim()).filter(Boolean);
   };
   var splitSelectorList = (text) => splitTopLevel(text, ",");
-  var closingParen = (s, open3) => {
+  var closingParen = (s, open4) => {
     let depth = 0;
-    for (let i = open3; i < s.length; i++) {
+    for (let i = open4; i < s.length; i++) {
       if (s[i] === "(") depth++;
       else if (s[i] === ")" && --depth === 0) return i;
     }
@@ -1789,9 +1854,9 @@ svg.i .fill { fill: currentColor; stroke: none; }
     const fn = /:(not|has)\(/gi;
     let m;
     while (m = fn.exec(s)) {
-      const open3 = m.index + m[0].length - 1;
-      const close = closingParen(s, open3);
-      out += s.slice(from, open3 + 1) + hide(s.slice(open3 + 1, close));
+      const open4 = m.index + m[0].length - 1;
+      const close = closingParen(s, open4);
+      out += s.slice(from, open4 + 1) + hide(s.slice(open4 + 1, close));
       from = close;
       fn.lastIndex = close;
     }
@@ -1832,12 +1897,12 @@ svg.i .fill { fill: currentColor; stroke: none; }
       const fn = /:(is|where|matches|-webkit-any)\(/gi;
       let m;
       while (depth < 3 && (m = fn.exec(masked))) {
-        const open3 = m.index + m[0].length - 1;
-        const close = closingParen(masked, open3);
-        const args = splitTopLevel(masked.slice(open3 + 1, close), ",");
+        const open4 = m.index + m[0].length - 1;
+        const close = closingParen(masked, open4);
+        const args = splitTopLevel(masked.slice(open4 + 1, close), ",");
         if (args.length > 1 && args.some((a) => STATE_TEST.test(restore2(a)))) {
           for (const a of args) {
-            walk(restore2(`${masked.slice(0, open3 + 1)}${a}${masked.slice(close)}`), depth + 1);
+            walk(restore2(`${masked.slice(0, open4 + 1)}${a}${masked.slice(close)}`), depth + 1);
           }
           return;
         }
@@ -1856,10 +1921,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
     const fn = /:(where|is|not|has|matches|-webkit-any)\(/gi;
     let m;
     while (m = fn.exec(s)) {
-      const open3 = m.index + m[0].length - 1;
-      const close = closingParen(s, open3);
+      const open4 = m.index + m[0].length - 1;
+      const close = closingParen(s, open4);
       if (m[1].toLowerCase() !== "where") {
-        const best = splitSelectorList(s.slice(open3 + 1, close)).map(specificity).sort(compareSpecificity).pop() || [0, 0, 0];
+        const best = splitSelectorList(s.slice(open4 + 1, close)).map(specificity).sort(compareSpecificity).pop() || [0, 0, 0];
         a += best[0];
         b += best[1];
         c += best[2];
@@ -2546,22 +2611,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
   var OUTLINE_COLOR = "#ff3b30";
   var MAX_WIDTH = 800;
   var JPEG_QUALITY = 0.85;
-  var requestFullCapture = () => new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_CAPTURE" }, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({ dataUrl: null, error: chrome.runtime.lastError.message });
-          return;
-        }
-        resolve({
-          dataUrl: resp?.dataUrl || null,
-          error: resp?.dataUrl ? null : resp?.error || "no response"
-        });
-      });
-    } catch (err) {
-      resolve({ dataUrl: null, error: String(err) });
-    }
-  });
+  var requestFullCapture = async () => {
+    const resp = await ask({ type: "TSAYRU_CAPTURE" });
+    return { dataUrl: resp.dataUrl || null, error: resp.dataUrl ? null : resp.error || "no response" };
+  };
   var captureErrorMessage = (raw) => {
     const s = String(raw || "");
     if (/activeTab|permission|not in effect|cannot access/i.test(s)) {
@@ -2572,29 +2625,23 @@ svg.i .fill { fill: currentColor; stroke: none; }
     }
     return "Screenshot failed. The task is saved without it";
   };
-  var reportCaptureError = (raw) => {
-    window.dispatchEvent(
-      new CustomEvent("tsayru-capture-error", {
-        detail: { message: captureErrorMessage(raw) }
-      })
-    );
-  };
+  var reportCaptureError = (raw) => bus.emit("warn", captureErrorMessage(raw));
   var loadImage = (dataUrl) => new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = dataUrl;
   });
-  var cropToDataUrl = (img, rect2) => {
-    if (rect2.width === 0 || rect2.height === 0) return null;
+  var cropToDataUrl = (img, rect) => {
+    if (rect.width === 0 || rect.height === 0) return null;
     const dpr = window.devicePixelRatio || 1;
-    const sx = Math.round(Math.max(0, (rect2.left - PADDING) * dpr));
-    const sy = Math.round(Math.max(0, (rect2.top - PADDING) * dpr));
+    const sx = Math.round(Math.max(0, (rect.left - PADDING) * dpr));
+    const sy = Math.round(Math.max(0, (rect.top - PADDING) * dpr));
     const sxRight = Math.round(
-      Math.min((rect2.left + rect2.width + PADDING) * dpr, img.width)
+      Math.min((rect.left + rect.width + PADDING) * dpr, img.width)
     );
     const syBottom = Math.round(
-      Math.min((rect2.top + rect2.height + PADDING) * dpr, img.height)
+      Math.min((rect.top + rect.height + PADDING) * dpr, img.height)
     );
     const sw = sxRight - sx;
     const sh = syBottom - sy;
@@ -2612,10 +2659,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
     ctx.fillRect(0, 0, outW, outH);
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
     const outScale = outW / sw;
-    const ex = (rect2.left * dpr - sx) * outScale;
-    const ey = (rect2.top * dpr - sy) * outScale;
-    const ew = rect2.width * dpr * outScale;
-    const eh = rect2.height * dpr * outScale;
+    const ex = (rect.left * dpr - sx) * outScale;
+    const ey = (rect.top * dpr - sy) * outScale;
+    const ew = rect.width * dpr * outScale;
+    const eh = rect.height * dpr * outScale;
     ctx.strokeStyle = OUTLINE_COLOR;
     ctx.lineWidth = Math.max(2, Math.round(2 * dpr * outScale));
     ctx.strokeRect(ex, ey, ew, eh);
@@ -2641,9 +2688,9 @@ svg.i .fill { fill: currentColor; stroke: none; }
   };
   var captureElement = async (target) => {
     if (!(target instanceof Element)) return null;
-    let rect2 = target.getBoundingClientRect();
-    if (rect2.width === 0 || rect2.height === 0) return null;
-    if (rect2.top < 0 || rect2.left < 0 || rect2.bottom > window.innerHeight || rect2.right > window.innerWidth) {
+    let rect = target.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    if (rect.top < 0 || rect.left < 0 || rect.bottom > window.innerHeight || rect.right > window.innerWidth) {
       try {
         target.scrollIntoView({ block: "nearest", inline: "nearest" });
       } catch {
@@ -2651,7 +2698,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
       await new Promise(
         (r) => requestAnimationFrame(() => requestAnimationFrame(r))
       );
-      rect2 = target.getBoundingClientRect();
+      rect = target.getBoundingClientRect();
     }
     return withHiddenUI(async () => {
       const { dataUrl, error } = await requestFullCapture();
@@ -2661,34 +2708,16 @@ svg.i .fill { fill: currentColor; stroke: none; }
       }
       const img = await loadImage(dataUrl);
       if (!img) return null;
-      return cropToDataUrl(img, rect2);
+      return cropToDataUrl(img, rect);
     });
   };
 
   // src/chatpicker.js
-  var isContextInvalidated = (err) => /context invalidated|Extension context/i.test(String(err || ""));
-  var fetchOnlineTabs = () => new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_LIST_TABS" }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
-          resolve({
-            ok: false,
-            error: resp?.error || chrome.runtime.lastError?.message || "no response"
-          });
-          return;
-        }
-        resolve({ ok: true, tabs: resp.tabs || [] });
-      });
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
-  var openTab = (url) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_OPEN_TAB", url });
-    } catch {
-    }
+  var fetchOnlineTabs = async () => {
+    const resp = await ask({ type: "TSAYRU_LIST_TABS" });
+    return resp.ok ? { ok: true, tabs: resp.tabs || [] } : resp;
   };
+  var openTab = (url) => ask({ type: "TSAYRU_OPEN_TAB", url });
   var renderItem = (entry, onPick) => {
     let urlLabel = entry.url;
     try {
@@ -2780,24 +2809,39 @@ svg.i .fill { fill: currentColor; stroke: none; }
   });
 
   // src/sidebar.js
-  var flash = (msg, opts) => toast(msg, opts);
   var warn = (msg) => toast(msg, { tone: "warn" });
-  window.addEventListener("tsayru-persist-error", (e) => {
-    warn(e?.detail?.message || "Couldn\u2019t save tasks");
+  bus.on("warn", warn);
+  bus.on("tasks-changed", () => {
+    if (!state.tasks.some((t) => t.id === state.editingTaskId)) state.editingTaskId = null;
+    renderSidebar();
   });
-  window.addEventListener("tsayru-capture-error", (e) => {
-    warn(e?.detail?.message || "Screenshot failed");
-  });
-  var writeClipboard = async (text, okMsg) => {
+  var confirmKey = (button, label) => {
+    if (button.dataset.confirming) return;
+    button.dataset.confirming = "1";
+    const glyph = button.querySelector("svg");
+    const text = [...button.childNodes].find((n) => n.nodeType === 3);
+    const before = text?.nodeValue;
+    const check = icon("check");
+    check.classList.add("pop");
+    glyph?.replaceWith(check);
+    if (text && label) text.nodeValue = label;
+    setTimeout(() => {
+      check.replaceWith(glyph);
+      if (text) text.nodeValue = before;
+      delete button.dataset.confirming;
+    }, 1200);
+  };
+  var writeClipboard = async (text, okMsg, button, done) => {
     try {
       await navigator.clipboard.writeText(text);
-      flash(okMsg, { iconName: "copy" });
+      toast(okMsg, { iconName: "copy" });
+      if (button) confirmKey(button, done);
     } catch (err) {
       console.warn("[tsayru] clipboard write failed:", err);
       warn("Couldn\u2019t copy to the clipboard. Try again");
     }
   };
-  var copyAll = async () => {
+  var copyAll = async (e) => {
     const tasks = visibleTasks();
     const text = formatTasks(state.tasks, state.filterHost, {
       filterTag: state.filterTag
@@ -2806,13 +2850,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
       warn("Nothing to copy yet");
       return;
     }
-    await writeClipboard(text, `Copied ${tasks.length} task${plural(tasks.length)}`);
+    await writeClipboard(text, `Copied ${tasks.length} task${plural(tasks.length)}`, e.currentTarget, "Copied");
     postBatch(tasks, null).then((p) => {
       if (!p.ok) console.warn("[tsayru] inbox save skipped:", p.error);
     });
-  };
-  var copyOne = async (task, displayIndex) => {
-    await writeClipboard(formatTask(task, displayIndex), "Task copied");
   };
   var visibleTasks = () => {
     let list = filterByHost(state.tasks, state.filterHost);
@@ -2821,51 +2862,17 @@ svg.i .fill { fill: currentColor; stroke: none; }
     }
     return list;
   };
-  var isContextInvalidated2 = (err) => /context invalidated|Extension context/i.test(String(err || ""));
-  var postBatch = (tasks, target) => new Promise((resolve) => {
-    const payload = {
+  var postBatch = (tasks, target) => ask({
+    type: "TSAYRU_SEND",
+    path: "/tasks",
+    method: "POST",
+    body: {
       tasks,
       host: location.host,
       filterHost: state.filterHost || null,
       targetTabUrl: target?.url || null,
       targetTabTitle: target?.title || null,
       sentAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", path: "/tasks", body: payload, method: "POST" },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve({
-              ok: false,
-              error: resp?.error || chrome.runtime.lastError?.message || "no response"
-            });
-            return;
-          }
-          resolve({ ok: true, batchId: resp.data?.batchId });
-        }
-      );
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
-  var pushToWebChat = (tabId, content, images) => new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content, images },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve({
-              ok: false,
-              error: resp?.error || chrome.runtime.lastError?.message || "no response"
-            });
-            return;
-          }
-          resolve({ ok: true, ...resp });
-        }
-      );
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
     }
   });
   var sendBatch = async (tasks, target) => {
@@ -2878,14 +2885,14 @@ svg.i .fill { fill: currentColor; stroke: none; }
       screenshotMode: "attached"
     });
     const images = tasks.map((t) => t.screenshot).filter(Boolean);
-    flash(`Sending to ${label}\u2026`, { iconName: "send", ttl: 2e4 });
-    const inject = await pushToWebChat(target.tabId, md, images);
+    toast(`Sending to ${label}\u2026`, { iconName: "send", ttl: 2e4 });
+    const inject = await ask({ type: "TSAYRU_PUSH_CLAUDE_AI", tabId: target.tabId, content: md, images });
     if (inject.ok) {
-      flash(`Sent to ${label}`, { iconName: "send" });
+      toast(`Sent to ${label}`, { iconName: "send" });
       return;
     }
     console.warn("[tsayru] inject failed:", inject.error);
-    if (isContextInvalidated2(inject.error)) {
+    if (isContextInvalidated(inject.error)) {
       warn(`tsayru was updated. Reload this page (${IS_MAC ? "\u2318R" : "F5"}) and send again`);
     } else if (/chat input not found/i.test(String(inject.error))) {
       warn("No chat input on that tab. Open a chat there and try again");
@@ -2903,37 +2910,26 @@ svg.i .fill { fill: currentColor; stroke: none; }
     if (target === null) return;
     sendBatch(tasks, target);
   };
-  var pollDoneStatus = () => {
-    if (!refs.sidebar || refs.sidebar.classList.contains("hidden")) return;
-    if (!state.tasks.some((t) => t.id && !t.done)) return;
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" },
-        (resp) => {
-          void chrome.runtime.lastError;
-          const ids = resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
-          if (!ids || ids.length === 0) return;
-          const doneIds = new Set(ids);
-          let changed2 = false;
-          for (const t of state.tasks) {
-            if (t.id && !t.done && doneIds.has(t.id)) {
-              t.done = true;
-              changed2 = true;
-            }
-          }
-          if (changed2) {
-            persist();
-            renderSidebar();
-          }
-        }
-      );
-    } catch {
+  var pollQuietUntil = 0;
+  var pollDoneStatus = async () => {
+    if (!sidebarVisible() || Date.now() < pollQuietUntil || !state.tasks.some((t) => !t.done)) return;
+    const resp = await ask({ type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" });
+    if (!resp.ok) pollQuietUntil = Date.now() + 6e4;
+    const ids = new Set(resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : []);
+    let changed2 = false;
+    for (const t of state.tasks) {
+      if (!t.done && ids.has(t.id)) changed2 = t.done = true;
+    }
+    if (changed2) {
+      persist();
+      renderSidebar();
     }
   };
   var donePollTimer = null;
   var ensureDonePolling = () => {
     if (donePollTimer) return;
     donePollTimer = setInterval(pollDoneStatus, 1e4);
+    lifetime.signal.addEventListener("abort", () => clearInterval(donePollTimer));
   };
   var onTaskHover = (selector) => {
     if (state.inspecting) return;
@@ -2945,57 +2941,39 @@ svg.i .fill { fill: currentColor; stroke: none; }
     if (state.inspecting) return;
     moveHighlight(null);
   };
-  var clearTasks = () => {
-    if (state.tasks.length === 0) return;
-    const removed = visibleTasks();
-    if (removed.length === 0) return;
-    const removedSet = new Set(removed);
-    state.tasks = state.tasks.filter((t) => !removedSet.has(t));
-    state.editingTaskIndex = null;
+  var removeTasks = (removed, message) => {
+    if (!removed.length) return;
+    const at = removed.map((t) => state.tasks.indexOf(t));
+    const gone = new Set(removed);
+    if (removed.some((t) => t.id === state.editingTaskId)) state.editingTaskId = null;
+    state.tasks = state.tasks.filter((t) => !gone.has(t));
     persist();
     renderSidebar();
-    toast(`Cleared ${removed.length} task${plural(removed.length)}`, {
+    toast(message, {
       tone: "danger",
       iconName: "trash",
       action: {
         label: "Undo",
         run: () => {
-          state.tasks.push(...removed);
+          removed.forEach((t, i) => state.tasks.splice(Math.min(at[i], state.tasks.length), 0, t));
           persist();
           renderSidebar();
         }
       }
     });
+  };
+  var clearTasks = () => {
+    const removed = visibleTasks();
+    removeTasks(removed, `Cleared ${removed.length} task${plural(removed.length)}`);
   };
   var actButton = (name, label, onClick2, extra = "") => el("button", { class: `act${extra}`, title: label, "aria-label": label, onClick: onClick2 }, icon(name));
   var editDraft = null;
-  var editTask = (idx) => {
-    state.editingTaskIndex = idx;
+  var editTask = (task) => {
+    state.editingTaskId = task.id;
     editDraft = null;
     renderSidebar();
   };
-  var deleteTask = (idx) => {
-    const [removed] = state.tasks.splice(idx, 1);
-    if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
-    else if (state.editingTaskIndex !== null && state.editingTaskIndex > idx) {
-      state.editingTaskIndex -= 1;
-    }
-    persist();
-    renderSidebar();
-    toast("Task deleted", {
-      tone: "danger",
-      iconName: "trash",
-      action: {
-        label: "Undo",
-        run: () => {
-          state.tasks.splice(Math.min(idx, state.tasks.length), 0, removed);
-          persist();
-          renderSidebar();
-        }
-      }
-    });
-  };
-  var renderEditor = (task, idx) => {
+  var renderEditor = (task) => {
     const ta = el("textarea", {
       class: "field",
       rows: 3,
@@ -3010,22 +2988,20 @@ svg.i .fill { fill: currentColor; stroke: none; }
       ta.focus();
       ta.setSelectionRange(ta.value.length, ta.value.length);
     }, 0);
+    const close = () => {
+      state.editingTaskId = null;
+      editDraft = null;
+      renderSidebar();
+    };
     const save = () => {
       const v = ta.value.trim();
       if (!v) {
         ta.focus();
         return;
       }
-      state.tasks[idx].text = v;
-      state.editingTaskIndex = null;
-      editDraft = null;
+      task.text = v;
       persist();
-      renderSidebar();
-    };
-    const cancel = () => {
-      state.editingTaskIndex = null;
-      editDraft = null;
-      renderSidebar();
+      close();
     };
     ta.__tsayruKey = (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -3035,7 +3011,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        cancel();
+        close();
         return true;
       }
       return false;
@@ -3047,18 +3023,18 @@ svg.i .fill { fill: currentColor; stroke: none; }
       el(
         "div",
         { class: "edit-ft" },
-        el("button", { class: "btn quiet small", onClick: cancel }, "Cancel", el("span", { class: "kbd-in" }, "Esc")),
+        el("button", { class: "btn quiet small", onClick: close }, "Cancel", el("span", { class: "kbd-in" }, "Esc")),
         el("button", { class: "btn ink small", onClick: save }, "Save", el("span", { class: "kbd-in" }, "\u21B5"))
       )
     );
   };
-  var renderTask = (task, idx, displayNum) => {
-    const editing = state.editingTaskIndex === idx;
+  var renderTask = (task, displayNum, entering) => {
+    const editing = state.editingTaskId === task.id;
     const styleTask = !!task.styleChanges?.length;
     return el(
       "div",
       {
-        class: "task" + (task.done ? " done" : "") + (editing ? " editing" : ""),
+        class: "task" + (task.done ? " done" : "") + (editing ? " editing" : "") + (entering ? " enter" : ""),
         onMouseEnter: () => onTaskHover(task.selector),
         onMouseLeave: onTaskLeave
       },
@@ -3077,13 +3053,17 @@ svg.i .fill { fill: currentColor; stroke: none; }
           editing ? null : el(
             "div",
             { class: "acts" },
-            actButton("copy", "Copy this task", () => copyOne(task, displayNum)),
-            actButton("edit", "Edit task", () => editTask(idx)),
-            actButton("close", "Delete task", () => deleteTask(idx), " danger")
+            actButton(
+              "copy",
+              "Copy this task",
+              (e) => writeClipboard(formatTask(task, displayNum), "Task copied", e.currentTarget)
+            ),
+            actButton("edit", "Edit task", () => editTask(task)),
+            actButton("close", "Delete task", () => removeTasks([task], "Task deleted"), " danger")
           )
         ),
         el("div", { class: "sel", title: task.selector }, task.selector),
-        editing ? renderEditor(task, idx) : (
+        editing ? renderEditor(task) : (
           // Style-editor tasks speak through their change list; no nag for text.
           task.text || !styleTask ? el("div", { class: "text" + (task.text ? "" : " empty") }, task.text || "No note yet") : null
         ),
@@ -3199,12 +3179,17 @@ svg.i .fill { fill: currentColor; stroke: none; }
     );
   };
   var renderDeck = () => {
+    if (!refs.sidebar) return;
     const picking = state.inspecting;
     const styling = picking && state.pickMode === "style";
     const pick = refs.sidebar.querySelector(".pick");
     pick.classList.toggle("on", picking);
     pick.setAttribute("aria-pressed", String(picking));
-    pick.querySelector(".disc").replaceChildren(icon(styling ? "sliders" : "target"));
+    const glyph = styling ? "sliders" : "target";
+    if (pick.dataset.glyph !== glyph) {
+      pick.dataset.glyph = glyph;
+      pick.querySelector(".disc").replaceChildren(icon(glyph));
+    }
     pick.querySelector(".pick-title").textContent = !picking ? "Pick an element" : styling ? "Click to restyle" : "Click any element";
     pick.querySelector(".pick-sub").hidden = !picking;
     pick.querySelector(".led").hidden = !picking;
@@ -3212,7 +3197,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
     restyle.classList.toggle("on", styling);
     restyle.setAttribute("aria-pressed", String(styling));
   };
-  var renderSidebar = () => {
+  var renderSidebar = ({ enter } = {}) => {
     if (!refs.sidebar) return;
     const list = refs.sidebar.querySelector(".list");
     list.replaceChildren();
@@ -3232,10 +3217,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
     if (filtered.length === 0) {
       renderEmpty(list);
     } else {
-      filtered.forEach((task, fi) => {
-        const idx = state.tasks.indexOf(task);
-        list.appendChild(renderTask(task, idx, fi + 1));
-      });
+      filtered.forEach((task, i) => list.appendChild(renderTask(task, i + 1, task.id === enter)));
     }
     const n = state.tasks.length;
     refs.sidebar.querySelector(".tally").textContent = n ? `${n} task${plural(n)}` : "No tasks";
@@ -3279,7 +3261,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
             title: "Click an element on the page to add a task about it",
             onClick: () => toggleInspector()
           },
-          el("span", { class: "disc" }, icon("target")),
+          el("span", { class: "disc" }),
           el(
             "span",
             { class: "pick-label" },
@@ -3336,7 +3318,6 @@ svg.i .fill { fill: currentColor; stroke: none; }
     );
     uiLayer().appendChild(refs.sidebar);
     ensureDonePolling();
-    renderSidebar();
   };
 
   // src/modal.js
@@ -3358,9 +3339,10 @@ svg.i .fill { fill: currentColor; stroke: none; }
       frameworkPromise || Promise.resolve(null),
       new Promise((resolve) => setTimeout(() => resolve(null), 250))
     ]);
+    const id = uid();
     state.tasks.push({
       // Stable id — the done-status sync from the server matches on it.
-      id: crypto.randomUUID(),
+      id,
       selector,
       label,
       text,
@@ -3375,7 +3357,7 @@ svg.i .fill { fill: currentColor; stroke: none; }
       addedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
     await persist();
-    renderSidebar();
+    renderSidebar({ enter: id });
     bus.emit("task-added");
   };
   var quickAddTask = async (target, ctx) => {
@@ -4787,7 +4769,7 @@ ${note}` : note;
       if (!merged.length && !existing.text) state.tasks.splice(state.tasks.indexOf(existing), 1);
     } else {
       state.tasks.push({
-        id: crypto.randomUUID(),
+        id: uid(),
         selector: s.selector,
         label: `Style: ${s.label}`,
         text: note,
@@ -4816,7 +4798,7 @@ ${note}` : note;
     renderSidebar();
     const n = plan.merged.length;
     const what = `${n} change${n === 1 ? "" : "s"}`;
-    flash(plan.existing ? `Style task updated: ${what}` : `Style task saved: ${what}`, { iconName: "sliders" });
+    toast(plan.existing ? `Style task updated: ${what}` : `Style task saved: ${what}`, { iconName: "sliders" });
   };
   var onPageHide = () => {
     const s = session;
@@ -4979,7 +4961,7 @@ ${note}` : note;
         await saveSession(s);
       } catch (err) {
         console.warn("[tsayru] saving style task failed:", err);
-        flash("Couldn\u2019t save the style task. Close the editor again to retry", { tone: "warn" });
+        toast("Couldn\u2019t save the style task. Close the editor again to retry", { tone: "warn" });
       }
     }
     force(s, null);
@@ -5050,46 +5032,51 @@ ${note}` : note;
     name.textContent = describeNode(target, 2);
     size.textContent = `${Math.round(r.width)} \xD7 ${Math.round(r.height)}`;
   };
-  var setInspecting = (on, mode = "task") => {
-    state.inspecting = on;
-    state.pickMode = on ? mode : "task";
-    document.documentElement.classList.toggle("tsayru-inspecting", on);
-    if (!on) {
+  var setInspecting = (on2, mode = "task") => {
+    state.inspecting = on2;
+    state.pickMode = on2 ? mode : "task";
+    document.documentElement.classList.toggle("tsayru-inspecting", on2);
+    if (!on2) {
       state.hovered = null;
       moveHighlight(null);
     }
-    if (on) ensureMainWorld();
-    renderSidebar();
+    if (on2) ensureMainWorld();
+    renderDeck();
   };
-  var showSidebar = () => {
+  var fontsWaited = false;
+  var open3 = async () => {
+    ensureListeners();
+    await Promise.all([restore(), fontsWaited || fontsReady(150)]);
+    fontsWaited = true;
     ensureOverlay();
     ensureSidebar();
+    renderSidebar();
     refs.sidebar.classList.remove("hidden");
+    watchTasks(true);
+  };
+  var wanted = false;
+  var opening = null;
+  var showSidebar = () => {
+    wanted = true;
+    if (sidebarVisible()) return Promise.resolve();
+    opening ||= open3().finally(() => {
+      opening = null;
+      if (!wanted) hideSidebar();
+    });
+    return opening;
   };
   var hideSidebar = () => {
+    wanted = false;
+    watchTasks(false);
     if (refs.sidebar) refs.sidebar.classList.add("hidden");
     if (state.inspecting) setInspecting(false);
     moveHighlight(null);
-    state.editingTaskIndex = null;
+    state.editingTaskId = null;
     closeStyleEditor();
   };
-  var toggleSidebar = () => {
-    ensureOverlay();
-    ensureSidebar();
-    if (refs.sidebar.classList.contains("hidden")) {
-      showSidebar();
-    } else {
-      hideSidebar();
-    }
-  };
-  var toggleInspector = () => {
-    showSidebar();
-    setInspecting(!(state.inspecting && state.pickMode === "task"), "task");
-  };
-  var toggleStylePick = () => {
-    showSidebar();
-    setInspecting(!(state.inspecting && state.pickMode === "style"), "style");
-  };
+  var toggleSidebar = () => wanted ? hideSidebar() : showSidebar();
+  var toggleInspector = () => setInspecting(!(state.inspecting && state.pickMode === "task"), "task");
+  var toggleStylePick = () => setInspecting(!(state.inspecting && state.pickMode === "style"), "style");
   var isOurChrome = (node) => isOurHost(node);
   var styleKey = (e) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.shiftKey;
   var styleGesture = (e) => styleKey(e) && sidebarVisible();
@@ -5212,15 +5199,18 @@ ${note}` : note;
   var onKeyUp = (e) => {
     if (e.key === "Meta" || e.key === "Control") clearGestureHover();
   };
-  var initEventListeners = () => {
-    document.addEventListener("mousemove", onMouseMove, true);
-    document.addEventListener("pointerdown", onPointerSuppress, true);
-    document.addEventListener("mousedown", onPointerSuppress, true);
-    document.addEventListener("mouseup", onPointerSuppress, true);
-    document.addEventListener("click", onClick, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("keyup", onKeyUp, true);
-    window.addEventListener("blur", clearGestureHover);
+  var listening = false;
+  var ensureListeners = () => {
+    if (listening) return;
+    listening = true;
+    on(document, "mousemove", onMouseMove, true);
+    on(document, "pointerdown", onPointerSuppress, true);
+    on(document, "mousedown", onPointerSuppress, true);
+    on(document, "mouseup", onPointerSuppress, true);
+    on(document, "click", onClick, true);
+    on(document, "keydown", onKeyDown, true);
+    on(document, "keyup", onKeyUp, true);
+    on(window, "blur", clearGestureHover);
     bus.on("ui-key", (e) => e.type === "keyup" ? onKeyUp(e) : e.type === "keydown" && onKeyDown(e));
     bus.on("task-added", () => {
       if (sidebarVisible()) setInspecting(true);
@@ -5228,23 +5218,41 @@ ${note}` : note;
     const follow = () => {
       if (shown) moveHighlight(shown.isConnected ? shown : null);
     };
-    window.addEventListener("scroll", follow, true);
-    window.addEventListener("resize", follow);
+    on(window, "scroll", follow, true);
+    on(window, "resize", follow);
   };
 
   // src/index.js
-  if (window.__tsayruInjected) {
-  } else {
-    window.__tsayruInjected = true;
-    initEventListeners();
+  var onMessage = (msg) => {
+    if (msg?.type === "TSAYRU_TOGGLE") toggleSidebar();
+  };
+  var teardown = () => {
+    lifetime.abort();
+    try {
+      chrome.runtime.onMessage.removeListener(onMessage);
+    } catch {
+    }
+    refs.ui?.remove();
+    refs.styleHost?.remove();
+    document.documentElement.classList.remove("tsayru-inspecting");
+  };
+  var previous = window.__tsayru;
+  var alive = false;
+  try {
+    alive = !!previous?.alive();
+  } catch {
+  }
+  if (!alive) {
+    try {
+      previous?.teardown();
+    } catch {
+    }
+    for (const node of document.querySelectorAll("tsayru-ui, tsayru-style, .tsayru-sidebar, .tsayru-highlight")) {
+      node.remove();
+    }
+    window.__tsayru = { alive: () => !!chrome.runtime?.id, teardown };
     initErrorCapture();
-    chrome.runtime?.onMessage?.addListener((msg) => {
-      if (msg?.type === "TSAYRU_TOGGLE") {
-        toggleSidebar();
-      }
-    });
-    restore().then(() => {
-      if (isDevHost()) ensureSidebar();
-    });
+    chrome.runtime?.onMessage?.addListener(onMessage);
+    if (isDevHost()) showSidebar();
   }
 })();

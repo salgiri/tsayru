@@ -3,7 +3,7 @@
 // styleeditor.js). Page CSS can't reach in, page scripts and the inspector's
 // deep hit-testing can't look in, and events from inside never reach the page.
 
-import { el } from "./core.js";
+import { el, lifetime } from "./core.js";
 
 // Events from inside stop at the shadow root: the page never sees them
 // (outside-click handlers would close the very dialog being annotated,
@@ -72,11 +72,14 @@ export const createShadowHost = ({ tag, className, css, onKey }) => {
     if (into) e.stopImmediatePropagation();
   };
 
+  // Tied to the script's lifetime too: a copy that takes over after an
+  // extension update removes these along with everything else (index.js).
+  const opts = { capture: true, signal: lifetime.signal };
   for (const type of ["keydown", "keyup", "keypress"]) {
-    window.addEventListener(type, onWindowKey, true);
+    window.addEventListener(type, onWindowKey, opts);
   }
-  window.addEventListener("focusin", onWindowFocus, true);
-  window.addEventListener("focusout", onWindowFocus, true);
+  window.addEventListener("focusin", onWindowFocus, opts);
+  window.addEventListener("focusout", onWindowFocus, opts);
   document.documentElement.appendChild(node);
 
   return {

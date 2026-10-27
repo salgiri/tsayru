@@ -1,7 +1,7 @@
 // The page-facing UI — sidebar, dialogs, toasts and the page highlight —
 // lives in one closed shadow root (shadowhost.js), styled by ui-css.js.
 
-import { el, refs, bus } from "./core.js";
+import { el, refs, bus, lifetime } from "./core.js";
 import { createShadowHost, isOurHost } from "./shadowhost.js";
 import { UI_CSS } from "./ui-css.js";
 import { ensureFonts } from "./fonts.js";
@@ -31,6 +31,14 @@ const onPageEscape = (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
   dialogs[dialogs.length - 1].onEscape();
+};
+
+// Exits are shorter than entrances: the node plays its `.out` keyframes
+// (ui-css.js) and is removed right after.
+const leave = (node) => {
+  node.classList.add("out");
+  node.inert = true;
+  setTimeout(() => node.remove(), 160);
 };
 
 export const uiLayer = () => {
@@ -75,14 +83,16 @@ export const openDialog = ({ className = "", label, onEscape }) => {
   );
   const entry = { onEscape };
   dialogs.push(entry);
-  if (dialogs.length === 1) window.addEventListener("keydown", onPageEscape, true);
+  if (dialogs.length === 1) {
+    window.addEventListener("keydown", onPageEscape, { capture: true, signal: lifetime.signal });
+  }
   if (refs.sidebar) refs.sidebar.inert = true;
   layer.appendChild(scrim);
   return {
     scrim,
     dialog,
     close() {
-      scrim.remove();
+      leave(scrim);
       const i = dialogs.indexOf(entry);
       if (i >= 0) dialogs.splice(i, 1);
       if (!dialogs.length) {
@@ -109,7 +119,7 @@ export const dialogHeader = (title, onClose) =>
 let current = null;
 export const toast = (message, { tone, warn = false, iconName, action, ttl } = {}) => {
   uiLayer();
-  current?.dismiss();
+  current?.dismiss(true); // replaced, not expired: no exit animation
   if (warn) tone = "warn";
   const node = el(
     "div",
@@ -125,10 +135,11 @@ export const toast = (message, { tone, warn = false, iconName, action, ttl } = {
     timer = setTimeout(() => self.dismiss(), life);
   };
   const self = {
-    dismiss() {
+    dismiss(instant) {
       clearTimeout(timer);
-      node.remove();
       if (current === self) current = null;
+      if (instant) node.remove();
+      else leave(node);
     },
   };
   if (action) {

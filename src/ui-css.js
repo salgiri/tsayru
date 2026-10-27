@@ -40,13 +40,17 @@ export const UI_CSS =
   border-radius: 32px;
   overflow: hidden;
   pointer-events: auto;
-  transition: transform 300ms var(--ease-out), opacity 200ms ease-out, visibility 0s;
+  transition: transform 240ms var(--ease-out), opacity 160ms ease-out, visibility 0s;
+}
+/* First open on a page: slide in from where it will later hide to. */
+@starting-style {
+  .panel:not(.hidden) { transform: translateX(32px); opacity: 0; }
 }
 .panel.hidden {
   transform: translateX(calc(100% + 24px));
   opacity: 0;
   visibility: hidden;
-  transition: transform 180ms ease-out, opacity 180ms ease-out, visibility 0s 180ms;
+  transition: transform 160ms ease-out, opacity 160ms ease-out, visibility 0s 160ms;
 }
 
 .hd {
@@ -360,6 +364,9 @@ export const UI_CSS =
 }
 .chip svg.i { width: 14px; height: 14px; stroke-width: 2.4; }
 .props { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A task that just arrived settles into its row. */
+.task.enter { animation: row-in 260ms var(--ease-out); }
+@keyframes row-in { from { opacity: 0; transform: translateY(-6px); filter: blur(4px); } }
 .task.done .num { background: var(--well); color: var(--text-2); }
 .task.done .label,
 .task.done .text { color: var(--text-3); }
@@ -464,6 +471,10 @@ export const UI_CSS =
 .btn.ink { background: var(--ink); color: var(--on-ink); }
 .btn.small { height: 38px; padding: 0 14px; border-radius: 12px; font-size: 13.5px; }
 
+/* A key confirming what it just did ("Copied"): the check pops in. */
+svg.i.pop { animation: pop 300ms cubic-bezier(0.2, 0, 0, 1); }
+@keyframes pop { from { opacity: 0; scale: 0.25; filter: blur(4px); } }
+
 /* Press: every key gives way a little, the instant it's pressed. */
 :is(.round, .pick, .square, .send, .btn, .toast-act):not(:disabled):active { scale: 0.96; }
 
@@ -508,6 +519,10 @@ export const UI_CSS =
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(12px); filter: blur(4px); }
 }
+.toast.out { animation: toast-out 150ms ease-out forwards; }
+@keyframes toast-out {
+  to { opacity: 0; transform: translateX(-50%) translateY(8px); filter: blur(4px); }
+}
 
 /* ---------- dialogs ---------- */
 
@@ -533,6 +548,10 @@ export const UI_CSS =
   animation: dialog-in 240ms var(--ease-out);
 }
 @keyframes dialog-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+.scrim.out { animation: fade-out 150ms ease-out forwards; }
+.scrim.out .dialog { animation: dialog-out 150ms ease-out forwards; }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes dialog-out { to { opacity: 0; transform: scale(0.98); } }
 .dlg-hd { display: flex; align-items: center; gap: 10px; padding: 2px 0 0 6px; }
 .dlg-title { flex: 1; font-size: 21px; font-weight: 700; letter-spacing: -0.02em; text-wrap: balance; }
 .target {
@@ -698,12 +717,20 @@ export const UI_CSS =
   .shot { outline-color: oklch(1 0 0 / 0.1); }
 }
 
-/* Reduced motion: entrances fade in place, nothing pulses or spins. */
+/* Reduced motion: entrances and exits fade in place, nothing pulses or spins. */
 @media (prefers-reduced-motion: reduce) {
   .dialog,
-  .toast { animation-name: fade; }
+  .toast,
+  .task.enter,
+  svg.i.pop { animation-name: fade; }
+  .toast.out,
+  .scrim.out,
+  .scrim.out .dialog { animation-name: fade-out; }
   .led,
   .pick.on .disc svg.i { animation: none; }
   .panel.hidden { transform: none; }
+  @starting-style {
+    .panel:not(.hidden) { transform: none; }
+  }
 }
 `;
