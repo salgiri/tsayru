@@ -17,11 +17,11 @@ import { uiLayer, toast, hints } from "./ui.js";
 import { icon, brandMark, grain } from "./icons.js";
 
 export const flash = (msg, opts) => toast(msg, opts);
-const warn = (msg) => toast(msg, { warn: true });
+const warn = (msg) => toast(msg, { tone: "warn" });
 
 // Surface persist quota / I/O errors from core.js (avoids import cycle).
 window.addEventListener("tsayru-persist-error", (e) => {
-  warn(e?.detail?.message || "Couldn't save tasks");
+  warn(e?.detail?.message || "Couldn’t save tasks");
 });
 
 // Surface screenshot-capture failures from screenshot.js (same pattern) —
@@ -36,7 +36,7 @@ const writeClipboard = async (text, okMsg) => {
     flash(okMsg, { iconName: "copy" });
   } catch (err) {
     console.warn("[tsayru] clipboard write failed:", err);
-    warn("Couldn't write to the clipboard");
+    warn("Couldn’t copy to the clipboard. Try again");
   }
 };
 
@@ -154,6 +154,8 @@ const sendBatch = async (tasks, target) => {
     screenshotMode: "attached",
   });
   const images = tasks.map((t) => t.screenshot).filter(Boolean);
+  // Pasting, uploading screenshots and pressing Send takes a few seconds.
+  flash(`Sending to ${label}…`, { iconName: "send", ttl: 20000 });
   const inject = await pushToWebChat(target.tabId, md, images);
   if (inject.ok) {
     flash(`Sent to ${label}`, { iconName: "send" });
@@ -161,11 +163,11 @@ const sendBatch = async (tasks, target) => {
   }
   console.warn("[tsayru] inject failed:", inject.error);
   if (isContextInvalidated(inject.error)) {
-    warn(`tsayru was updated. Reload this page (${IS_MAC ? "⌘R" : "F5"})`);
+    warn(`tsayru was updated. Reload this page (${IS_MAC ? "⌘R" : "F5"}) and send again`);
   } else if (/chat input not found/i.test(String(inject.error))) {
     warn("No chat input on that tab. Open a chat there and try again");
   } else {
-    warn(`Couldn't send to ${label}`);
+    warn(`Couldn’t send to ${label}. Open that chat and try again`);
   }
 };
 
@@ -246,6 +248,7 @@ const clearTasks = () => {
   persist();
   renderSidebar();
   toast(`Cleared ${removed.length} task${plural(removed.length)}`, {
+    tone: "danger",
     iconName: "trash",
     action: {
       label: "Undo",
@@ -258,8 +261,8 @@ const clearTasks = () => {
   });
 };
 
-const actButton = (name, label, onClick) =>
-  el("button", { class: "act", title: label, "aria-label": label, onClick }, icon(name));
+const actButton = (name, label, onClick, extra = "") =>
+  el("button", { class: `act${extra}`, title: label, "aria-label": label, onClick }, icon(name));
 
 // The edit draft survives re-renders (done-status polling, inspector toggles).
 let editDraft = null;
@@ -270,14 +273,27 @@ const editTask = (idx) => {
   renderSidebar();
 };
 
+// Deleting is one click, so it comes with an undo, like Clear.
 const deleteTask = (idx) => {
-  state.tasks.splice(idx, 1);
+  const [removed] = state.tasks.splice(idx, 1);
   if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
   else if (state.editingTaskIndex !== null && state.editingTaskIndex > idx) {
     state.editingTaskIndex -= 1;
   }
   persist();
   renderSidebar();
+  toast("Task deleted", {
+    tone: "danger",
+    iconName: "trash",
+    action: {
+      label: "Undo",
+      run: () => {
+        state.tasks.splice(Math.min(idx, state.tasks.length), 0, removed);
+        persist();
+        renderSidebar();
+      },
+    },
+  });
 };
 
 const renderEditor = (task, idx) => {
@@ -370,8 +386,8 @@ const renderTask = (task, idx, displayNum) => {
               "div",
               { class: "acts" },
               actButton("copy", "Copy this task", () => copyOne(task, displayNum)),
-              actButton("edit", "Edit", () => editTask(idx)),
-              actButton("close", "Delete", () => deleteTask(idx)),
+              actButton("edit", "Edit task", () => editTask(idx)),
+              actButton("close", "Delete task", () => deleteTask(idx), " danger"),
             ),
       ),
       el("div", { class: "sel", title: task.selector }, task.selector),
@@ -646,7 +662,7 @@ export const ensureSidebar = () => {
       ),
       el(
         "button",
-        { class: "square", title: "Clear the tasks in view (you can undo)", onClick: clearTasks },
+        { class: "square danger", title: "Clear the tasks in view (you can undo)", onClick: clearTasks },
         icon("trash"),
         "Clear",
       ),

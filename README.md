@@ -36,7 +36,7 @@ When you're working with Claude on a frontend project, half the conversation is 
 | **Cross-machine sync** | Point `TSAYRU_INBOX` at a synced folder (iCloud/Dropbox/network mount) on both machines — batches submitted on one appear in the other's MCP. |
 | **Inline editing** | Edit any task's text without losing the captured selector / screenshot. |
 | **Hover preview** | Hovering a task in the sidebar re-highlights the original element on the page. |
-| **Light & dark** | The UI follows your system theme: speckled "chalk" by day, "graphite" by night. It lives in closed shadow roots, so no site's CSS can bend it, and it brings its own typeface (Onest). |
+| **Light & dark** | The UI follows your system theme: speckled "chalk" by day, "graphite" by night. It lives in closed shadow roots, so no site's CSS can bend it, and it brings its own typeface (Onest). Keyboard, screen reader, 320px windows and reduced motion are covered. |
 
 ---
 
@@ -78,7 +78,7 @@ Then load it in Chrome (or any Chromium-based browser — Arc, Brave, Edge):
 | **Copy** | Markdown of every task in view lands on your clipboard. Paste into any chat, editor, or doc. Lightweight (no inline image data). The batch is also saved to the local inbox (if `tsayru-server` is running) so MCP can fetch the screenshots. |
 | **Copy this task** (the copy icon on a row) | Same as above, but only that one task. |
 
-You can also filter tasks by site (the segmented control above the list) or by `#tag`, edit a task in place (pencil icon; Enter saves, Esc cancels), or **Clear** the tasks in view — with an undo.
+You can also filter tasks by site (the segmented control above the list) or by `#tag`, edit a task in place (pencil icon; Enter saves, Esc cancels), delete one (×) or **Clear** the tasks in view — both with an undo.
 
 ### Restyling with the style editor
 

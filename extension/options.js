@@ -22,7 +22,7 @@ const save = async () => {
       const u = new URL(serverUrl);
       if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
     } catch {
-      status.textContent = "That URL doesn't look right";
+      status.textContent = "Enter a URL like http://127.0.0.1:7777";
       status.className = "bad";
       return;
     }

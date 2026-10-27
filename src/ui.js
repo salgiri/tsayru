@@ -7,7 +7,9 @@ import { UI_CSS } from "./ui-css.js";
 import { ensureFonts } from "./fonts.js";
 import { icon, grain } from "./icons.js";
 
+let host = null;
 let layer = null; // the .ui wrapper every piece goes into
+let live = null; // polite live region: toasts are read out from here
 const dialogs = []; // open dialogs, topmost last
 
 // Keys typed inside the UI that no focused field took: Escape closes the top
@@ -33,13 +35,15 @@ const onPageEscape = (e) => {
 
 export const uiLayer = () => {
   if (layer) return layer;
-  const host = createShadowHost({
+  host = createShadowHost({
     tag: "tsayru-ui",
     className: "tsayru-ui-host",
     css: UI_CSS,
     onKey,
   });
-  layer = el("div", { class: "ui" });
+  // Rendered empty first, so screen readers pick up every later update.
+  live = el("div", { class: "sr", role: "status", "aria-live": "polite" });
+  layer = el("div", { class: "ui" }, live);
   host.root.appendChild(layer);
   refs.ui = host.node;
   ensureFonts();
@@ -47,8 +51,11 @@ export const uiLayer = () => {
 };
 
 // A dialog on a scrim. `onEscape` runs for Escape and for a click on the
-// scrim; the caller decides whether that closes it.
+// scrim; the caller decides whether that closes it. While it's open the
+// sidebar behind is inert, and closing hands focus back to where it was.
 export const openDialog = ({ className = "", label, onEscape }) => {
+  uiLayer();
+  const returnTo = host.root.activeElement;
   const dialog = el("div", {
     class: `dialog shell${className ? ` ${className}` : ""}`,
     role: "dialog",
@@ -69,7 +76,8 @@ export const openDialog = ({ className = "", label, onEscape }) => {
   const entry = { onEscape };
   dialogs.push(entry);
   if (dialogs.length === 1) window.addEventListener("keydown", onPageEscape, true);
-  uiLayer().appendChild(scrim);
+  if (refs.sidebar) refs.sidebar.inert = true;
+  layer.appendChild(scrim);
   return {
     scrim,
     dialog,
@@ -77,7 +85,11 @@ export const openDialog = ({ className = "", label, onEscape }) => {
       scrim.remove();
       const i = dialogs.indexOf(entry);
       if (i >= 0) dialogs.splice(i, 1);
-      if (!dialogs.length) window.removeEventListener("keydown", onPageEscape, true);
+      if (!dialogs.length) {
+        window.removeEventListener("keydown", onPageEscape, true);
+        if (refs.sidebar) refs.sidebar.inert = false;
+        if (returnTo?.isConnected) returnTo.focus();
+      }
     },
   };
 };
@@ -91,22 +103,27 @@ export const dialogHeader = (title, onClose) =>
     el("button", { class: "round", title: "Close (Esc)", "aria-label": "Close", onClick: onClose }, icon("close")),
   );
 
-// One toast at a time, bottom centre. `warn` swaps the blue check for a
-// marker-pink alert; an `action` adds a button and keeps it up longer.
+// One toast at a time, bottom centre. `tone`: "warn" (marker-pink alert) for
+// problems, "danger" (red) for removals; an `action` adds a button and keeps
+// the toast up longer. Pointer or focus on the toast holds it.
 let current = null;
-export const toast = (message, { warn = false, iconName, action, ttl } = {}) => {
+export const toast = (message, { tone, warn = false, iconName, action, ttl } = {}) => {
+  uiLayer();
   current?.dismiss();
+  if (warn) tone = "warn";
   const node = el(
     "div",
-    {
-      class: `toast${warn ? " warn" : ""}${action ? " has-act" : ""}`,
-      role: "status",
-      "aria-live": "polite",
-    },
-    el("span", { class: "disc" }, icon(iconName || (warn ? "alert" : "check"))),
+    { class: `toast${tone ? ` ${tone}` : ""}${action ? " has-act" : ""}`, "aria-hidden": "true" },
+    el("span", { class: "disc" }, icon(iconName || (tone === "warn" ? "alert" : "check"))),
     el("span", { class: "toast-msg" }, message),
   );
+  const life = ttl ?? (action ? 8000 : tone === "warn" ? 6000 : 2000);
   let timer = 0;
+  const hold = () => clearTimeout(timer);
+  const release = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => self.dismiss(), life);
+  };
   const self = {
     dismiss() {
       clearTimeout(timer);
@@ -115,6 +132,9 @@ export const toast = (message, { warn = false, iconName, action, ttl } = {}) => 
     },
   };
   if (action) {
+    // The live region below can't hold a button; the toast itself stays
+    // reachable for the action (and is no longer hidden from readers).
+    node.removeAttribute("aria-hidden");
     node.appendChild(
       el(
         "button",
@@ -129,9 +149,14 @@ export const toast = (message, { warn = false, iconName, action, ttl } = {}) => 
       ),
     );
   }
-  timer = setTimeout(() => self.dismiss(), ttl ?? (action ? 8000 : warn ? 3200 : 1800));
+  for (const [type, fn] of [["pointerenter", hold], ["pointerleave", release], ["focusin", hold], ["focusout", release]]) {
+    node.addEventListener(type, fn);
+  }
   current = self;
-  uiLayer().appendChild(node);
+  layer.appendChild(node);
+  live.textContent = message;
+  release();
+  return self;
 };
 
 // Keycap hints: [["⌥ click", "Quick add"], …]

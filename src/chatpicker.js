@@ -107,7 +107,7 @@ export const pickTargetChat = () =>
         status.replaceWith(
           isContextInvalidated(res.error)
             ? warning(`tsayru was updated. Reload this page (${IS_MAC ? "⌘R" : "F5"}) and send again.`)
-            : warning(`Couldn't list the open tabs: ${res.error}`),
+            : warning(`Couldn’t list the open tabs (${res.error}). Close this and press Send again.`),
         );
         return;
       }
@@ -123,7 +123,7 @@ export const pickTargetChat = () =>
             "div",
             { class: "opens" },
             el("button", { class: "btn primary", onClick: go("https://claude.ai/new") }, icon("external"), "Open claude.ai"),
-            el("button", { class: "btn quiet", onClick: go("https://claude.com") }, "claude.com"),
+            el("button", { class: "btn quiet", onClick: go("https://claude.com") }, "Open claude.com"),
           ),
         );
         return;

@@ -701,7 +701,7 @@ const finish = async (s, { save }) => {
       await saveSession(s);
     } catch (err) {
       console.warn("[tsayru] saving style task failed:", err);
-      flash("Couldn't save the style task", { warn: true });
+      flash("Couldn’t save the style task. Close the editor again to retry", { tone: "warn" });
     }
   }
   force(s, null);

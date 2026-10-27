@@ -100,7 +100,7 @@ export const persist = async () => {
         detail: {
           message: quota
             ? "Storage is full. Delete old tasks to save new ones"
-            : "Couldn't save tasks",
+            : "Couldn’t save tasks. Reload the page and try again",
         },
       }),
     );

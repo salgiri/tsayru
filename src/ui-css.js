@@ -1,5 +1,7 @@
 // Stylesheet of the page-facing UI (ui.js): sidebar, dialogs, toasts and the
 // page highlight, all inside one closed shadow root. Tokens: theme-css.js.
+// Radii nest concentrically: shell 32 → keys 20 at a 12px inset; dialog 32 →
+// footer buttons 16 at a 16px inset.
 
 import { THEME_CSS } from "./theme-css.js";
 
@@ -14,10 +16,19 @@ export const UI_CSS =
   font-synthesis: none;
   text-align: left;
 }
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ---------- sidebar ---------- */
 
 .panel {
+  container: panel / inline-size;
   position: fixed;
   top: 12px;
   right: 12px;
@@ -26,15 +37,16 @@ export const UI_CSS =
   max-height: calc(100vh - 24px);
   display: flex;
   flex-direction: column;
-  border-radius: 28px;
+  border-radius: 32px;
   overflow: hidden;
   pointer-events: auto;
-  transition: transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1.08), visibility 0s;
+  transition: transform 300ms var(--ease-out), opacity 200ms ease-out, visibility 0s;
 }
 .panel.hidden {
   transform: translateX(calc(100% + 24px));
+  opacity: 0;
   visibility: hidden;
-  transition: transform 200ms ease-in, visibility 0s 200ms;
+  transition: transform 180ms ease-out, opacity 180ms ease-out, visibility 0s 180ms;
 }
 
 .hd {
@@ -75,9 +87,8 @@ export const UI_CSS =
   place-items: center;
   flex: none;
   color: var(--text-2);
-  transition: background-color 120ms, color 120ms;
+  transition: background-color 150ms ease-out, color 150ms ease-out, scale var(--press);
 }
-.round:hover { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
 .round svg.i { width: 20px; height: 20px; }
 
 /* the pick row: one loud key, one quiet one */
@@ -90,21 +101,15 @@ export const UI_CSS =
 .pick {
   position: relative;
   height: 68px;
-  border-radius: 22px;
+  border-radius: 20px;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 16px 0 10px;
   background: var(--signal);
   color: var(--on-signal);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), inset 0 -2px 0 rgb(0 0 0 / 0.18),
-    0 10px 20px -10px var(--signal-glow);
-  transition: transform 90ms ease, box-shadow 90ms ease;
-}
-.pick:active {
-  transform: translateY(1px);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(0 0 0 / 0.18),
-    0 4px 10px -6px var(--signal-glow);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
+  transition: scale var(--press);
 }
 .pick:focus-visible { outline-color: var(--ink); }
 .disc {
@@ -128,7 +133,7 @@ export const UI_CSS =
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pick-sub { font-size: 12.5px; font-weight: 500; opacity: 0.78; white-space: nowrap; }
+.pick-sub { font-size: 12.5px; font-weight: 500; opacity: 0.8; white-space: nowrap; }
 .led {
   position: absolute;
   top: 12px;
@@ -137,13 +142,11 @@ export const UI_CSS =
   height: 9px;
   border-radius: 50%;
   background: var(--led);
-  box-shadow: 0 0 0 3px rgb(250 214 32 / 0.22), 0 0 14px 2px rgb(250 214 32 / 0.85);
+  box-shadow: 0 0 0 3px rgb(250 214 32 / 0.22), 0 0 8px 1px rgb(250 214 32 / 0.7);
   animation: led 1.4s ease-in-out infinite;
 }
 .pick.on .disc svg.i { animation: spin 6s linear infinite; }
-@keyframes led {
-  50% { opacity: 0.45; box-shadow: 0 0 0 2px rgb(250 214 32 / 0.12), 0 0 6px 0 rgb(250 214 32 / 0.5); }
-}
+@keyframes led { 50% { opacity: 0.45; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .square {
@@ -156,16 +159,16 @@ export const UI_CSS =
   gap: 4px;
   background: var(--key);
   box-shadow: var(--shadow-key);
-  font-size: 11.5px;
+  border: 1px solid transparent;
+  font-size: 12px;
   font-weight: 650;
   color: var(--ink);
-  transition: transform 90ms ease, background-color 120ms;
+  transition: background-color 150ms ease-out, box-shadow 150ms ease-out, scale var(--press);
 }
-.square:hover:not(:disabled) { background: var(--key-hover); }
-.square:active:not(:disabled) { transform: translateY(1px); box-shadow: var(--shadow-press); }
 .square:disabled { opacity: 0.38; }
-.deck .square { height: 68px; border-radius: 22px; }
-.square.on { color: var(--signal-text); box-shadow: var(--shadow-key), inset 0 0 0 2px var(--signal); }
+.deck .square { height: 68px; }
+.square.on { color: var(--signal-text); box-shadow: inset 0 0 0 2px var(--signal); }
+.square.danger { color: var(--danger-text); }
 
 .hints {
   display: flex;
@@ -186,7 +189,7 @@ export const UI_CSS =
   background: var(--key);
   box-shadow: var(--shadow-key);
   color: var(--ink);
-  font: 600 11.5px/1 var(--font);
+  font: 600 12px/1 var(--font);
   white-space: nowrap;
 }
 
@@ -206,7 +209,6 @@ export const UI_CSS =
   padding: 3px;
   border-radius: 15px;
   background: var(--well);
-  box-shadow: var(--shadow-press);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -224,11 +226,11 @@ export const UI_CSS =
   white-space: nowrap;
   flex: none;
   max-width: 190px;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
 }
 .seg button > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.seg button:hover { color: var(--ink); }
 .seg button.on { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
-.n { font-variant-numeric: tabular-nums; font-weight: 500; opacity: 0.66; }
+.n { font-variant-numeric: tabular-nums; font-weight: 500; opacity: 0.7; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px; }
 .tag {
   display: inline-flex;
@@ -242,9 +244,9 @@ export const UI_CSS =
   color: var(--marker-text);
   font-size: 13px;
   font-weight: 600;
+  transition: box-shadow 150ms ease-out, background-color 150ms ease-out;
 }
 .tag svg.i { width: 14px; height: 14px; stroke-width: 2.4; }
-.tag:hover { box-shadow: inset 0 0 0 1.5px var(--marker); }
 .tag.on { background: var(--marker-solid); color: var(--on-marker); box-shadow: none; }
 
 /* task list: flat rows on the shell; the one under the pointer stands up */
@@ -264,7 +266,7 @@ export const UI_CSS =
   column-gap: 12px;
   padding: 12px 10px;
   border-radius: 20px;
-  transition: background-color 120ms, box-shadow 120ms;
+  transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
 }
 .task + .task::before {
   content: "";
@@ -274,11 +276,8 @@ export const UI_CSS =
   right: 10px;
   border-top: 1px solid var(--line);
 }
-.task:hover,
 .task:focus-within,
 .task.editing { background: var(--key); box-shadow: var(--shadow-key); }
-.task:hover::before,
-.task:hover + .task::before,
 .task:focus-within::before,
 .task:focus-within + .task::before,
 .task.editing::before,
@@ -308,8 +307,7 @@ export const UI_CSS =
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.acts { display: flex; gap: 2px; margin-right: -4px; opacity: 0; transition: opacity 120ms; }
-.task:hover .acts,
+.acts { display: flex; gap: 2px; margin-right: -4px; opacity: 0; transition: opacity 150ms ease-out; }
 .task:focus-within .acts { opacity: 1; }
 @media (hover: none) { .acts { opacity: 1; } }
 .act {
@@ -319,11 +317,11 @@ export const UI_CSS =
   display: grid;
   place-items: center;
   color: var(--text-2);
+  transition: background-color 150ms ease-out, color 150ms ease-out;
 }
-.act:hover { background: var(--well); color: var(--ink); }
 .act svg.i { width: 18px; height: 18px; }
 .sel {
-  font: 11.5px/1.35 var(--mono);
+  font: 12px/1.35 var(--mono);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -335,6 +333,7 @@ export const UI_CSS =
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 .text.empty { color: var(--text-3); }
 .styled {
@@ -373,17 +372,17 @@ export const UI_CSS =
   min-height: 84px;
   resize: vertical;
   margin: 0;
-  padding: 12px 14px;
-  border: 0;
-  border-radius: 16px;
+  padding: 11px 13px;
+  border: 1px solid var(--field-line);
+  border-radius: 14px;
   background: var(--well);
-  box-shadow: var(--shadow-press);
   color: var(--ink);
   font: 15px/1.45 var(--font);
   outline: none;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
 }
 .field::placeholder { color: var(--text-2); }
-.field:focus { box-shadow: var(--shadow-press), 0 0 0 2px var(--signal); }
+.field:focus { border-color: var(--signal); box-shadow: 0 0 0 1px var(--signal); }
 .edit-ft { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .kbd-in {
   padding: 3px 6px;
@@ -392,7 +391,7 @@ export const UI_CSS =
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
-  opacity: 0.8;
+  opacity: 0.85;
 }
 
 /* empty list: the three steps, in order */
@@ -402,16 +401,15 @@ export const UI_CSS =
 .steps .num { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 2px var(--ink); }
 .steps li:first-child .num { background: var(--signal); color: var(--on-signal); box-shadow: none; }
 .steps b { display: block; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; line-height: 30px; }
-.steps p { margin: 0; font-size: 13.5px; color: var(--text-2); }
+.steps p { margin: 0; font-size: 13.5px; color: var(--text-2); text-wrap: pretty; }
 .nothing { padding: 22px 12px; text-align: center; font-size: 14px; color: var(--text-2); }
 .nothing button { display: block; margin: 6px auto 0; color: var(--signal-text); font-weight: 650; }
-.nothing button:hover { text-decoration: underline; }
 
 /* ship bar: send is the ink key, copy and clear stand beside it */
 .ship { display: grid; grid-template-columns: minmax(0, 1fr) 60px 60px; gap: 8px; padding: 12px; }
 .send {
   height: 64px;
-  border-radius: 22px;
+  border-radius: 20px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -421,21 +419,31 @@ export const UI_CSS =
   font-size: 16px;
   font-weight: 650;
   letter-spacing: -0.01em;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 10px 18px -10px rgb(0 0 0 / 0.55);
-  transition: transform 90ms ease;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
+  transition: scale var(--press);
 }
-.send:active:not(:disabled) { transform: translateY(1px); }
 .send:disabled { opacity: 0.38; }
 .send .disc { width: 46px; height: 46px; background: var(--signal); color: var(--on-signal); }
 .send .disc svg.i { width: 22px; height: 22px; margin: 1px 2px 0 0; }
 .send-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* A narrow window (or 200% zoom): drop decoration before text gets cut. */
+@container panel (max-width: 330px) {
+  .ship { grid-template-columns: minmax(0, 1fr) 52px 52px; }
+  .send .disc { display: none; }
+  .send { padding: 0 12px; font-size: 15px; }
+  .hints { display: none; }
+  .pick { gap: 10px; padding: 0 12px 0 8px; }
+  .pick .disc { width: 40px; height: 40px; }
+  .pick-title { font-size: 16px; }
+}
 
 /* ---------- buttons shared by dialogs ---------- */
 
 .btn {
   height: 52px;
   padding: 0 20px;
-  border-radius: 18px;
+  border-radius: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -444,20 +452,20 @@ export const UI_CSS =
   font-weight: 650;
   letter-spacing: -0.01em;
   white-space: nowrap;
-  transition: transform 90ms ease, background-color 120ms;
+  transition: background-color 150ms ease-out, color 150ms ease-out, scale var(--press);
 }
-.btn:active:not(:disabled) { transform: translateY(1px); }
 .btn.quiet { color: var(--text-2); }
-.btn.quiet:hover { color: var(--ink); background: var(--key); box-shadow: var(--shadow-key); }
 .btn.primary {
   background: var(--signal);
   color: var(--on-signal);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), inset 0 -2px 0 rgb(0 0 0 / 0.16),
-    0 10px 18px -10px var(--signal-glow);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
 }
 .btn.primary:focus-visible { outline-color: var(--ink); }
 .btn.ink { background: var(--ink); color: var(--on-ink); }
-.btn.small { height: 38px; padding: 0 14px; border-radius: 13px; font-size: 13.5px; }
+.btn.small { height: 38px; padding: 0 14px; border-radius: 12px; font-size: 13.5px; }
+
+/* Press: every key gives way a little, the instant it's pressed. */
+:is(.round, .pick, .square, .send, .btn, .toast-act):not(:disabled):active { scale: 0.96; }
 
 /* ---------- toast ---------- */
 
@@ -475,16 +483,17 @@ export const UI_CSS =
   border-radius: 999px;
   background: var(--ink);
   color: var(--on-ink);
-  box-shadow: 0 16px 36px -12px rgb(0 0 0 / 0.5);
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.35);
   font-size: 14.5px;
   font-weight: 600;
   pointer-events: auto;
-  animation: toast 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  animation: toast-in 240ms var(--ease-out);
 }
 .toast.has-act { padding-right: 8px; }
 .toast .disc { width: 32px; height: 32px; background: var(--signal); color: var(--on-signal); }
 .toast .disc svg.i { width: 18px; height: 18px; stroke-width: 2.6; }
 .toast.warn .disc { background: var(--marker-solid); color: var(--on-marker); }
+.toast.danger .disc { background: var(--danger-solid); color: var(--on-danger); }
 .toast-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toast-act {
   height: 32px;
@@ -494,10 +503,10 @@ export const UI_CSS =
   font-size: 13.5px;
   font-weight: 700;
   flex: none;
+  transition: background-color 150ms ease-out, scale var(--press);
 }
-.toast-act:hover { background: color-mix(in oklab, var(--on-ink) 26%, transparent); }
-@keyframes toast {
-  from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.96); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); filter: blur(4px); }
 }
 
 /* ---------- dialogs ---------- */
@@ -510,7 +519,7 @@ export const UI_CSS =
   padding: 16px;
   background: var(--scrim);
   pointer-events: auto;
-  animation: fade 160ms ease;
+  animation: fade 160ms ease-out;
 }
 .dialog {
   width: min(500px, 100%);
@@ -519,20 +528,19 @@ export const UI_CSS =
   flex-direction: column;
   gap: 14px;
   padding: 16px;
-  border-radius: 28px;
+  border-radius: 32px;
   overflow: hidden;
-  animation: rise 220ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+  animation: dialog-in 240ms var(--ease-out);
 }
-@keyframes fade { from { opacity: 0; } }
-@keyframes rise { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
 .dlg-hd { display: flex; align-items: center; gap: 10px; padding: 2px 0 0 6px; }
-.dlg-title { flex: 1; font-size: 21px; font-weight: 700; letter-spacing: -0.025em; }
+.dlg-title { flex: 1; font-size: 21px; font-weight: 700; letter-spacing: -0.02em; text-wrap: balance; }
 .target {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border-radius: 22px;
+  border-radius: 20px;
   background: var(--key);
   box-shadow: var(--shadow-key);
 }
@@ -542,8 +550,10 @@ export const UI_CSS =
   width: 100%;
   max-height: 200px;
   object-fit: contain;
-  border-radius: 15px;
+  border-radius: 12px;
   background: var(--well);
+  outline: 1px solid oklch(0 0 0 / 0.1);
+  outline-offset: -1px;
 }
 .target-meta { display: flex; flex-direction: column; gap: 2px; padding: 0 6px; min-width: 0; }
 .target-meta b {
@@ -555,19 +565,19 @@ export const UI_CSS =
   text-overflow: ellipsis;
 }
 .target-meta .sel { white-space: normal; word-break: break-all; }
-.dialog .field { min-height: 112px; font-size: 16px; padding: 14px 16px; border-radius: 20px; }
+.dialog .field { min-height: 112px; font-size: 16px; padding: 13px 15px; border-radius: 16px; }
 .dlg-ft { display: flex; align-items: center; gap: 8px; }
 .dlg-ft .hints { padding: 0 0 0 6px; margin-right: auto; gap: 6px 12px; }
 
 /* chat picker */
 .picker { width: min(520px, 100%); }
-.status { padding: 0 6px; font-size: 14px; color: var(--text-2); }
+.status { padding: 0 6px; font-size: 14px; color: var(--text-2); text-wrap: pretty; }
 .status.warn {
   display: flex;
   gap: 10px;
   align-items: flex-start;
   padding: 12px 14px;
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--caution-soft);
   color: var(--caution-text);
   font-weight: 550;
@@ -578,6 +588,7 @@ export const UI_CSS =
   flex-direction: column;
   gap: 8px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   max-height: 52vh;
   margin: 0 -4px;
   padding: 2px 4px 6px;
@@ -589,13 +600,13 @@ export const UI_CSS =
   column-gap: 12px;
   width: 100%;
   padding: 10px 14px 10px 10px;
-  border-radius: 22px;
+  border-radius: 20px;
+  border: 1px solid transparent;
   background: var(--key);
   box-shadow: var(--shadow-key);
-  transition: transform 90ms ease, background-color 120ms;
+  transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
 }
-.chat:hover { background: var(--key-hover); }
-.chat:active { transform: translateY(1px); }
+.chat:active { background: var(--well); }
 .chat .disc { width: 44px; height: 44px; background: var(--ink); color: var(--on-ink); }
 .chat .disc svg.i { width: 20px; height: 20px; }
 .chat-text { min-width: 0; }
@@ -628,6 +639,27 @@ export const UI_CSS =
 }
 .opens { display: flex; flex-wrap: wrap; gap: 8px; }
 
+/* ---------- hover, only where a pointer can hover ---------- */
+
+@media (hover: hover) {
+  .round:hover { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
+  .square:hover:not(:disabled) { background: var(--key-hover); box-shadow: var(--shadow-key-hover); }
+  .square.danger:hover:not(:disabled) { background: var(--danger-soft); }
+  .seg button:hover { color: var(--ink); }
+  .tag:hover { box-shadow: inset 0 0 0 1.5px var(--marker); }
+  .task:hover { background: var(--key); box-shadow: var(--shadow-key); }
+  .task:hover::before,
+  .task:hover + .task::before { border-color: transparent; }
+  .task:hover .acts { opacity: 1; }
+  .act:hover { background: var(--well); color: var(--ink); }
+  .act.danger:hover { background: var(--danger-soft); color: var(--danger-text); }
+  .nothing button:hover { text-decoration: underline; }
+  .btn.quiet:hover { color: var(--ink); background: var(--key); box-shadow: var(--shadow-key); }
+  .btn.primary:hover { background: color-mix(in oklab, var(--signal) 90%, white); }
+  .toast-act:hover { background: color-mix(in oklab, var(--on-ink) 26%, transparent); }
+  .chat:hover { background: var(--key-hover); box-shadow: var(--shadow-key-hover); }
+}
+
 /* ---------- page highlight (what a click would pick) ---------- */
 
 .hl {
@@ -637,8 +669,8 @@ export const UI_CSS =
   display: none;
   border: 2px solid var(--signal);
   border-radius: 6px;
-  background: rgb(5 36 254 / 0.07);
-  box-shadow: 0 0 0 4px rgb(5 36 254 / 0.14);
+  background: rgb(5 36 254 / 0.06);
+  box-shadow: 0 0 0 3px rgb(5 36 254 / 0.12);
   pointer-events: none;
 }
 .hl-tag {
@@ -656,10 +688,22 @@ export const UI_CSS =
   color: var(--on-signal);
   font: 650 12.5px/1 var(--font);
   white-space: nowrap;
-  box-shadow: 0 6px 14px -6px var(--signal-glow);
 }
 .hl-tag b { font-weight: inherit; overflow: hidden; text-overflow: ellipsis; }
-.hl-tag span { opacity: 0.72; font-weight: 550; font-variant-numeric: tabular-nums; flex: none; }
+.hl-tag span { opacity: 0.75; font-weight: 550; font-variant-numeric: tabular-nums; flex: none; }
 .hl.below .hl-tag { bottom: auto; top: calc(100% + 6px); }
 .hl.inside .hl-tag { bottom: auto; top: 4px; left: 4px; }
+
+@media (prefers-color-scheme: dark) {
+  .shot { outline-color: oklch(1 0 0 / 0.1); }
+}
+
+/* Reduced motion: entrances fade in place, nothing pulses or spins. */
+@media (prefers-reduced-motion: reduce) {
+  .dialog,
+  .toast { animation-name: fade; }
+  .led,
+  .pick.on .disc svg.i { animation: none; }
+  .panel.hidden { transform: none; }
+}
 `;

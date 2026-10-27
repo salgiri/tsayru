@@ -42,7 +42,7 @@ const captureErrorMessage = (raw) => {
   if (/MAX_CAPTURE_VISIBLE_TAB|per second/i.test(s)) {
     return "Too many screenshots at once. Try again in a second";
   }
-  return "Screenshot failed";
+  return "Screenshot failed. The task is saved without it";
 };
 
 // Surface capture failures to the UI without importing the toast helper
