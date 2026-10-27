@@ -199,6 +199,8 @@
   var STORAGE_KEY = "tsayru_tasks";
   var state = {
     inspecting: false,
+    pickMode: "task",
+    // what an inspector click does: "task" (modal) or "style" (style editor)
     hovered: null,
     tasks: [],
     editingTaskIndex: null,
@@ -206,12 +208,18 @@
     filterTag: null
   };
   var refs = {
+    ui: null,
+    // the host of everything below (ui.js) — sidebar, dialogs, toasts, highlight
     highlight: null,
     sidebar: null,
     modal: null,
     styleHost: null
     // the style editor's panel + outline (styleeditor.js)
   };
+  var sidebarVisible = () => !!refs.sidebar && !refs.sidebar.classList.contains("hidden");
+  var IS_MAC = /mac|iphone|ipad/i.test(
+    navigator.userAgentData?.platform || navigator.platform || ""
+  );
   var busHandlers = {};
   var bus = {
     on(evt, fn) {
@@ -258,7 +266,7 @@
       window.dispatchEvent(
         new CustomEvent("tsayru-persist-error", {
           detail: {
-            message: quota ? "out of storage \u2014 delete old tasks" : "save error"
+            message: quota ? "Storage is full. Delete old tasks to save new ones" : "Couldn't save tasks"
           }
         })
       );
@@ -550,902 +558,1093 @@
     return text.length > 60 ? text.slice(0, 57) + "..." : text;
   };
 
-  // src/screenshot.js
-  var PADDING = 48;
-  var OUTLINE_COLOR = "#ff3b30";
-  var MAX_WIDTH = 800;
-  var JPEG_QUALITY = 0.85;
-  var requestFullCapture = () => new Promise((resolve) => {
+  // src/shadowhost.js
+  var SHADOW_STOP = [
+    "click",
+    "dblclick",
+    "auxclick",
+    "mousedown",
+    "mouseup",
+    "pointerdown",
+    "pointerup",
+    "contextmenu",
+    "wheel",
+    "touchstart",
+    "touchmove",
+    "touchend",
+    "input",
+    "beforeinput",
+    "paste",
+    "copy",
+    "cut"
+  ];
+  var stopHere = (e) => e.stopPropagation();
+  var createShadowHost = ({ tag, className, css, onKey: onKey2 }) => {
+    const node = document.createElement(tag);
+    node.className = className;
+    node.style.cssText = [
+      "all: initial !important",
+      "position: fixed !important",
+      "inset: 0 !important",
+      "z-index: 2147483647 !important",
+      "pointer-events: none !important",
+      "display: block !important"
+    ].join(";");
+    const root = node.attachShadow({ mode: "closed" });
     try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_CAPTURE" }, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({ dataUrl: null, error: chrome.runtime.lastError.message });
-          return;
-        }
-        resolve({
-          dataUrl: resp?.dataUrl || null,
-          error: resp?.dataUrl ? null : resp?.error || "no response"
-        });
-      });
-    } catch (err) {
-      resolve({ dataUrl: null, error: String(err) });
-    }
-  });
-  var captureErrorMessage = (raw) => {
-    const s = String(raw || "");
-    if (/activeTab|permission|not in effect|cannot access/i.test(s)) {
-      return "no screenshot access \u2014 click the tsayru toolbar icon once";
-    }
-    if (/MAX_CAPTURE_VISIBLE_TAB|per second/i.test(s)) {
-      return "screenshot rate limit \u2014 try again in a second";
-    }
-    return "screenshot failed";
-  };
-  var reportCaptureError = (raw) => {
-    window.dispatchEvent(
-      new CustomEvent("tsayru-capture-error", {
-        detail: { message: captureErrorMessage(raw) }
-      })
-    );
-  };
-  var loadImage = (dataUrl) => new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = dataUrl;
-  });
-  var cropToDataUrl = (img, rect) => {
-    if (rect.width === 0 || rect.height === 0) return null;
-    const dpr = window.devicePixelRatio || 1;
-    const sx = Math.round(Math.max(0, (rect.left - PADDING) * dpr));
-    const sy = Math.round(Math.max(0, (rect.top - PADDING) * dpr));
-    const sxRight = Math.round(
-      Math.min((rect.left + rect.width + PADDING) * dpr, img.width)
-    );
-    const syBottom = Math.round(
-      Math.min((rect.top + rect.height + PADDING) * dpr, img.height)
-    );
-    const sw = sxRight - sx;
-    const sh = syBottom - sy;
-    if (sw <= 0 || sh <= 0) return null;
-    const cssW = sw / dpr;
-    const cssH = sh / dpr;
-    const scale = Math.min(1, MAX_WIDTH / cssW);
-    const outW = Math.max(1, Math.round(cssW * scale * dpr));
-    const outH = Math.max(1, Math.round(cssH * scale * dpr));
-    const canvas = document.createElement("canvas");
-    canvas.width = outW;
-    canvas.height = outH;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, outW, outH);
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
-    const outScale = outW / sw;
-    const ex = (rect.left * dpr - sx) * outScale;
-    const ey = (rect.top * dpr - sy) * outScale;
-    const ew = rect.width * dpr * outScale;
-    const eh = rect.height * dpr * outScale;
-    ctx.strokeStyle = OUTLINE_COLOR;
-    ctx.lineWidth = Math.max(2, Math.round(2 * dpr * outScale));
-    ctx.strokeRect(ex, ey, ew, eh);
-    return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
-  };
-  var withHiddenUI = async (fn) => {
-    const nodes = [refs.sidebar, refs.highlight, refs.styleHost].filter(Boolean);
-    const prev = nodes.map((n) => [
-      n.style.getPropertyValue("visibility"),
-      n.style.getPropertyPriority("visibility")
-    ]);
-    for (const n of nodes) n.style.setProperty("visibility", "hidden", "important");
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    try {
-      return await fn();
-    } finally {
-      nodes.forEach((n, i) => {
-        const [value, priority] = prev[i];
-        if (value) n.style.setProperty("visibility", value, priority);
-        else n.style.removeProperty("visibility");
-      });
-    }
-  };
-  var captureElement = async (target) => {
-    if (!(target instanceof Element)) return null;
-    let rect = target.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return null;
-    if (rect.top < 0 || rect.left < 0 || rect.bottom > window.innerHeight || rect.right > window.innerWidth) {
-      try {
-        target.scrollIntoView({ block: "nearest", inline: "nearest" });
-      } catch {
-      }
-      await new Promise(
-        (r) => requestAnimationFrame(() => requestAnimationFrame(r))
-      );
-      rect = target.getBoundingClientRect();
-    }
-    return withHiddenUI(async () => {
-      const { dataUrl, error } = await requestFullCapture();
-      if (!dataUrl) {
-        reportCaptureError(error);
-        return null;
-      }
-      const img = await loadImage(dataUrl);
-      if (!img) return null;
-      return cropToDataUrl(img, rect);
-    });
-  };
-
-  // src/chatpicker.js
-  var isContextInvalidated = (err) => /context invalidated|Extension context/i.test(String(err || ""));
-  var fetchOnlineTabs = () => new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type: "TSAYRU_LIST_TABS" }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
-          resolve({
-            ok: false,
-            error: resp?.error || chrome.runtime.lastError?.message || "no response"
-          });
-          return;
-        }
-        resolve({ ok: true, tabs: resp.tabs || [] });
-      });
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
-  var pickerEl = null;
-  var closePicker = () => {
-    if (pickerEl) {
-      pickerEl.remove();
-      pickerEl = null;
-    }
-  };
-  var renderItem = (entry, onPick) => {
-    let urlLabel = entry.url;
-    try {
-      const u = new URL(entry.url);
-      urlLabel = u.host + (u.pathname.length > 1 ? u.pathname : "");
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      root.adoptedStyleSheets = [sheet];
     } catch {
+      root.appendChild(el("style", {}, css));
     }
-    return el(
-      "button",
-      {
-        class: "tsayru-picker-item tsayru-picker-item--online",
-        title: entry.url,
-        onClick: () => onPick(entry)
-      },
-      el(
-        "div",
-        { class: "tsayru-picker-item-head" },
-        el("span", { class: "tsayru-picker-item-kind" }, "\u{1F310}"),
-        el(
-          "span",
-          { class: "tsayru-picker-item-label" },
-          entry.title || "Untitled"
-        ),
-        entry.active ? el("span", { class: "tsayru-picker-item-meta" }, "active") : null
-      ),
-      el("div", { class: "tsayru-picker-item-path" }, urlLabel)
-    );
+    for (const type of SHADOW_STOP) root.addEventListener(type, stopHere);
+    const onWindowKey = (e) => {
+      if (e.target !== node) return;
+      e.stopImmediatePropagation();
+      if (e.type === "keydown" && root.activeElement?.__tsayruKey?.(e)) return;
+      onKey2?.(e);
+    };
+    const onWindowFocus = (e) => {
+      const into = e.type === "focusin" ? e.target === node : e.relatedTarget === node;
+      if (into) e.stopImmediatePropagation();
+    };
+    for (const type of ["keydown", "keyup", "keypress"]) {
+      window.addEventListener(type, onWindowKey, true);
+    }
+    window.addEventListener("focusin", onWindowFocus, true);
+    window.addEventListener("focusout", onWindowFocus, true);
+    document.documentElement.appendChild(node);
+    return {
+      node,
+      root,
+      destroy() {
+        for (const type of ["keydown", "keyup", "keypress"]) {
+          window.removeEventListener(type, onWindowKey, true);
+        }
+        window.removeEventListener("focusin", onWindowFocus, true);
+        window.removeEventListener("focusout", onWindowFocus, true);
+        node.remove();
+      }
+    };
   };
-  var pickTargetChat = () => new Promise((resolve) => {
-    closePicker();
-    let resolved = false;
-    const finish2 = (value) => {
-      if (resolved) return;
-      resolved = true;
-      closePicker();
-      window.removeEventListener("keydown", onKey, true);
-      resolve(value);
-    };
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish2(null);
-      }
-    };
-    const list = el("div", { class: "tsayru-picker-list" });
-    const status = el(
-      "div",
-      { class: "tsayru-picker-status" },
-      "Looking for open Claude web chats\u2026"
-    );
-    pickerEl = el(
-      "div",
-      {
-        class: "tsayru-modal-backdrop",
-        onClick: (e) => {
-          if (e.target === pickerEl) finish2(null);
-        }
-      },
-      el(
-        "div",
-        { class: "tsayru-modal tsayru-picker-modal" },
-        el(
-          "div",
-          { class: "tsayru-modal-head" },
-          el(
-            "div",
-            { class: "tsayru-modal-title" },
-            "Send to which web chat?"
-          ),
-          el(
-            "button",
-            { class: "tsayru-modal-close", onClick: () => finish2(null) },
-            "\xD7"
-          )
-        ),
-        status,
-        list,
-        el(
-          "div",
-          { class: "tsayru-picker-footer" },
-          el(
-            "button",
-            {
-              class: "tsayru-modal-cancel",
-              onClick: () => finish2(null)
-            },
-            "Cancel"
-          )
-        )
-      )
-    );
-    document.documentElement.appendChild(pickerEl);
-    window.addEventListener("keydown", onKey, true);
-    fetchOnlineTabs().then((res) => {
-      if (resolved) return;
-      list.innerHTML = "";
-      if (!res.ok) {
-        if (isContextInvalidated(res.error)) {
-          status.innerHTML = "Extension was reloaded \u2014 refresh the page (<kbd>Cmd+R</kbd> / <kbd>F5</kbd>).";
-          status.classList.add("tsayru-picker-status--warn");
-        } else {
-          status.textContent = `Error: ${res.error}`;
-        }
-        return;
-      }
-      const tabs = res.tabs;
-      if (tabs.length === 0) {
-        status.innerHTML = 'No open claude.ai or claude.com tabs. Open <a class="tsayru-picker-link" href="https://claude.ai/new" target="_blank">claude.ai/new</a> or <a class="tsayru-picker-link" href="https://claude.com" target="_blank">claude.com</a> in a new tab and reopen the picker.';
-        for (const a of status.querySelectorAll("a")) {
-          a.addEventListener("click", (e) => {
-            e.preventDefault();
-            try {
-              chrome.runtime.sendMessage({
-                type: "TSAYRU_OPEN_TAB",
-                url: a.href
-              });
-            } catch {
-            }
-            finish2(null);
-          });
-        }
-        return;
-      }
-      status.textContent = `Found ${tabs.length} web chat${tabs.length === 1 ? "" : "s"}:`;
-      tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-      for (const t of tabs) {
-        const entry = {
-          kind: "online",
-          tabId: t.tabId,
-          url: t.url,
-          title: t.title,
-          active: t.active,
-          lastAccessed: t.lastAccessed
-        };
-        list.appendChild(renderItem(entry, finish2));
-      }
-    });
-  });
+  var isOurHost = (node) => !!node?.closest?.(".tsayru-ui-host, .tsayru-style-host");
 
-  // src/sidebar.js
-  var flash = (msg) => {
-    const tip = el("div", { class: "tsayru-flash" }, msg);
-    document.documentElement.appendChild(tip);
-    setTimeout(() => tip.remove(), 1400);
-  };
-  var flashAction = (msg, actionLabel, onAction, ttl = 8e3) => {
-    const btn = el(
-      "button",
-      {
-        class: "tsayru-flash-btn",
-        onClick: () => {
-          tip.remove();
-          onAction();
-        }
-      },
-      actionLabel
-    );
-    const tip = el("div", { class: "tsayru-flash tsayru-flash-action" }, msg, btn);
-    document.documentElement.appendChild(tip);
-    setTimeout(() => tip.remove(), ttl);
-  };
-  window.addEventListener("tsayru-persist-error", (e) => {
-    flash(e?.detail?.message || "save error");
-  });
-  window.addEventListener("tsayru-capture-error", (e) => {
-    flash(e?.detail?.message || "screenshot failed");
-  });
-  var writeClipboard = async (text, okMsg) => {
+  // src/theme-css.js
+  var FONT_FAMILY = "tsayru Onest";
+  var THEME_CSS = `
+:host {
+  --font: "${FONT_FAMILY}", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --shell: #e2e2df;
+  --key: #f5f4f2;
+  --key-hover: #fbfbf9;
+  --well: #d6d6d2;
+  --line: #cbcbc7;
+  --groove: rgb(255 255 255 / 0.7);
+  --ink: #000;
+  --on-ink: #fff;
+  --text-2: #5b5b57;
+  --text-3: #64645f;
+  --signal: #0524fe;
+  --on-signal: #fff;
+  --signal-text: #0524fe;
+  --signal-soft: rgb(5 36 254 / 0.1);
+  --signal-glow: rgb(5 36 254 / 0.55);
+  --marker: #d12eaa;
+  --marker-soft: #fbdef0;
+  --marker-text: #a61b86;
+  --marker-solid: #a61b86;
+  --on-marker: #fff;
+  --caution-soft: #f6e6b4;
+  --caution-text: #6b4d00;
+  --disc: #f2f1ec;
+  --led: #fad620;
+  --scrim: rgb(20 20 18 / 0.32);
+  --code-prop: #0b6380;
+
+  --shadow-key: inset 0 1px 0 rgb(255 255 255 / 0.9), 0 1px 1px rgb(0 0 0 / 0.06),
+    0 4px 10px -4px rgb(0 0 0 / 0.2);
+  --shadow-press: inset 0 1px 2px rgb(0 0 0 / 0.14);
+  --shadow-shell: 0 0 0 1px rgb(0 0 0 / 0.07), 0 2px 4px rgb(0 0 0 / 0.05),
+    0 24px 56px -16px rgb(0 0 0 / 0.38);
+  --grain-opacity: 0.32;
+}
+
+@media (prefers-color-scheme: dark) {
+  :host {
+    --shell: #1d1e20;
+    --key: #2a2b2e;
+    --key-hover: #323337;
+    --well: #141517;
+    --line: #37383b;
+    --groove: rgb(255 255 255 / 0.04);
+    --ink: #f4f3f0;
+    --on-ink: #1d1e20;
+    --text-2: #afb1b6;
+    --text-3: #96989d;
+    --signal: #1746ff;
+    --signal-text: #88a9ff;
+    --signal-soft: rgb(60 100 255 / 0.2);
+    --signal-glow: rgb(23 70 255 / 0.7);
+    --marker: #f061ba;
+    --marker-soft: #4b233b;
+    --marker-text: #ffa1d7;
+    --marker-solid: #f061ba;
+    --on-marker: #1d1e20;
+    --caution-soft: #3d3214;
+    --caution-text: #f5d27a;
+    --disc: #f4f3f0;
+    --scrim: rgb(0 0 0 / 0.5);
+    --code-prop: #7dd3fc;
+
+    --shadow-key: inset 0 1px 0 rgb(255 255 255 / 0.07), 0 1px 1px rgb(0 0 0 / 0.4),
+      0 6px 14px -6px rgb(0 0 0 / 0.7);
+    --shadow-press: inset 0 1px 3px rgb(0 0 0 / 0.5);
+    --shadow-shell: 0 0 0 1px rgb(255 255 255 / 0.07), 0 2px 4px rgb(0 0 0 / 0.3),
+      0 28px 64px -16px rgb(0 0 0 / 0.75);
+    --grain-opacity: 0.34;
+  }
+}
+
+:host { all: initial; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+button {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button:disabled { cursor: default; }
+:focus-visible { outline: 2.5px solid var(--signal); outline-offset: 2px; }
+
+svg.i {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+svg.i .fill { fill: currentColor; stroke: none; }
+
+/* The speckle on every shell (icons.js grain()); its own layer, so repaints
+   around it never re-run the noise filter. */
+.shell { position: relative; isolation: isolate; background: var(--shell); box-shadow: var(--shadow-shell); }
+.grain {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+`;
+
+  // src/ui-css.js
+  var UI_CSS = THEME_CSS + `
+.ui {
+  font: 14px/1.4 var(--font);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+  text-align: left;
+}
+
+/* ---------- sidebar ---------- */
+
+.panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 368px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 28px;
+  overflow: hidden;
+  pointer-events: auto;
+  transition: transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1.08), visibility 0s;
+}
+.panel.hidden {
+  transform: translateX(calc(100% + 24px));
+  visibility: hidden;
+  transition: transform 200ms ease-in, visibility 0s 200ms;
+}
+
+.hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px 4px 16px;
+}
+.mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  overflow: hidden;
+  flex: none;
+  background: var(--signal);
+}
+.mark svg { display: block; width: 100%; height: 100%; }
+.word {
+  font-size: 21px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  padding-bottom: 2px;
+}
+.tally {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.round {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-2);
+  transition: background-color 120ms, color 120ms;
+}
+.round:hover { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
+.round svg.i { width: 20px; height: 20px; }
+
+/* the pick row: one loud key, one quiet one */
+.deck {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 68px;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+.pick {
+  position: relative;
+  height: 68px;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px 0 10px;
+  background: var(--signal);
+  color: var(--on-signal);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), inset 0 -2px 0 rgb(0 0 0 / 0.18),
+    0 10px 20px -10px var(--signal-glow);
+  transition: transform 90ms ease, box-shadow 90ms ease;
+}
+.pick:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(0 0 0 / 0.18),
+    0 4px 10px -6px var(--signal-glow);
+}
+.pick:focus-visible { outline-color: var(--ink); }
+.disc {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--disc);
+  color: #000;
+}
+.disc svg.i { width: 24px; height: 24px; }
+.pick-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pick-title {
+  font-size: 18px;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pick-sub { font-size: 12.5px; font-weight: 500; opacity: 0.78; white-space: nowrap; }
+.led {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--led);
+  box-shadow: 0 0 0 3px rgb(250 214 32 / 0.22), 0 0 14px 2px rgb(250 214 32 / 0.85);
+  animation: led 1.4s ease-in-out infinite;
+}
+.pick.on .disc svg.i { animation: spin 6s linear infinite; }
+@keyframes led {
+  50% { opacity: 0.45; box-shadow: 0 0 0 2px rgb(250 214 32 / 0.12), 0 0 6px 0 rgb(250 214 32 / 0.5); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.square {
+  height: 64px;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--key);
+  box-shadow: var(--shadow-key);
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--ink);
+  transition: transform 90ms ease, background-color 120ms;
+}
+.square:hover:not(:disabled) { background: var(--key-hover); }
+.square:active:not(:disabled) { transform: translateY(1px); box-shadow: var(--shadow-press); }
+.square:disabled { opacity: 0.38; }
+.deck .square { height: 68px; border-radius: 22px; }
+.square.on { color: var(--signal-text); box-shadow: var(--shadow-key), inset 0 0 0 2px var(--signal); }
+
+.hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 12px 18px 14px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.hint { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 7px;
+  border-radius: 7px;
+  background: var(--key);
+  box-shadow: var(--shadow-key);
+  color: var(--ink);
+  font: 600 11.5px/1 var(--font);
+  white-space: nowrap;
+}
+
+.groove {
+  height: 2px;
+  margin: 0 16px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--groove);
+  flex: none;
+}
+
+/* filters: hosts as a segmented control, #tags as marker chips */
+.filters { display: flex; flex-direction: column; gap: 8px; padding: 12px 12px 4px; }
+.seg {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 15px;
+  background: var(--well);
+  box-shadow: var(--shadow-press);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.seg::-webkit-scrollbar { display: none; }
+.seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+  flex: none;
+  max-width: 190px;
+}
+.seg button > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.seg button:hover { color: var(--ink); }
+.seg button.on { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
+.n { font-variant-numeric: tabular-nums; font-weight: 500; opacity: 0.66; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px; }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  background: var(--marker-soft);
+  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--marker) 55%, transparent);
+  color: var(--marker-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.tag svg.i { width: 14px; height: 14px; stroke-width: 2.4; }
+.tag:hover { box-shadow: inset 0 0 0 1.5px var(--marker); }
+.tag.on { background: var(--marker-solid); color: var(--on-marker); box-shadow: none; }
+
+/* task list: flat rows on the shell; the one under the pointer stands up */
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 8px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.task {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  column-gap: 12px;
+  padding: 12px 10px;
+  border-radius: 20px;
+  transition: background-color 120ms, box-shadow 120ms;
+}
+.task + .task::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 52px;
+  right: 10px;
+  border-top: 1px solid var(--line);
+}
+.task:hover,
+.task:focus-within,
+.task.editing { background: var(--key); box-shadow: var(--shadow-key); }
+.task:hover::before,
+.task:hover + .task::before,
+.task:focus-within::before,
+.task:focus-within + .task::before,
+.task.editing::before,
+.task.editing + .task::before { border-color: transparent; }
+.num {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.num svg.i { width: 16px; height: 16px; stroke-width: 2.6; }
+.body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.row1 { display: flex; align-items: center; gap: 4px; min-height: 30px; }
+.label {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acts { display: flex; gap: 2px; margin-right: -4px; opacity: 0; transition: opacity 120ms; }
+.task:hover .acts,
+.task:focus-within .acts { opacity: 1; }
+@media (hover: none) { .acts { opacity: 1; } }
+.act {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+.act:hover { background: var(--well); color: var(--ink); }
+.act svg.i { width: 18px; height: 18px; }
+.sel {
+  font: 11.5px/1.35 var(--mono);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.text {
+  margin-top: 3px;
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.text.empty { color: var(--text-3); }
+.styled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  border-radius: 999px;
+  background: var(--signal-soft);
+  color: var(--signal-text);
+  font-weight: 650;
+  white-space: nowrap;
+  flex: none;
+}
+.chip svg.i { width: 14px; height: 14px; stroke-width: 2.4; }
+.props { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task.done .num { background: var(--well); color: var(--text-2); }
+.task.done .label,
+.task.done .text { color: var(--text-3); }
+.task.done .text { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+
+.edit { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.field {
+  display: block;
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--well);
+  box-shadow: var(--shadow-press);
+  color: var(--ink);
+  font: 15px/1.45 var(--font);
+  outline: none;
+}
+.field::placeholder { color: var(--text-2); }
+.field:focus { box-shadow: var(--shadow-press), 0 0 0 2px var(--signal); }
+.edit-ft { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.kbd-in {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: color-mix(in oklab, currentColor 14%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+/* empty list: the three steps, in order */
+.steps { list-style: none; margin: 0; padding: 4px 10px 6px; display: flex; flex-direction: column; }
+.steps li { display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 12px; padding: 12px 0; }
+.steps li + li { border-top: 1px solid var(--line); }
+.steps .num { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 2px var(--ink); }
+.steps li:first-child .num { background: var(--signal); color: var(--on-signal); box-shadow: none; }
+.steps b { display: block; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; line-height: 30px; }
+.steps p { margin: 0; font-size: 13.5px; color: var(--text-2); }
+.nothing { padding: 22px 12px; text-align: center; font-size: 14px; color: var(--text-2); }
+.nothing button { display: block; margin: 6px auto 0; color: var(--signal-text); font-weight: 650; }
+.nothing button:hover { text-decoration: underline; }
+
+/* ship bar: send is the ink key, copy and clear stand beside it */
+.ship { display: grid; grid-template-columns: minmax(0, 1fr) 60px 60px; gap: 8px; padding: 12px; }
+.send {
+  height: 64px;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px 0 9px;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 10px 18px -10px rgb(0 0 0 / 0.55);
+  transition: transform 90ms ease;
+}
+.send:active:not(:disabled) { transform: translateY(1px); }
+.send:disabled { opacity: 0.38; }
+.send .disc { width: 46px; height: 46px; background: var(--signal); color: var(--on-signal); }
+.send .disc svg.i { width: 22px; height: 22px; margin: 1px 2px 0 0; }
+.send-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- buttons shared by dialogs ---------- */
+
+.btn {
+  height: 52px;
+  padding: 0 20px;
+  border-radius: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 15.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  transition: transform 90ms ease, background-color 120ms;
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn.quiet { color: var(--text-2); }
+.btn.quiet:hover { color: var(--ink); background: var(--key); box-shadow: var(--shadow-key); }
+.btn.primary {
+  background: var(--signal);
+  color: var(--on-signal);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), inset 0 -2px 0 rgb(0 0 0 / 0.16),
+    0 10px 18px -10px var(--signal-glow);
+}
+.btn.primary:focus-visible { outline-color: var(--ink); }
+.btn.ink { background: var(--ink); color: var(--on-ink); }
+.btn.small { height: 38px; padding: 0 14px; border-radius: 13px; font-size: 13.5px; }
+
+/* ---------- toast ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  min-height: 48px;
+  padding: 8px 18px 8px 8px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--on-ink);
+  box-shadow: 0 16px 36px -12px rgb(0 0 0 / 0.5);
+  font-size: 14.5px;
+  font-weight: 600;
+  pointer-events: auto;
+  animation: toast 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.toast.has-act { padding-right: 8px; }
+.toast .disc { width: 32px; height: 32px; background: var(--signal); color: var(--on-signal); }
+.toast .disc svg.i { width: 18px; height: 18px; stroke-width: 2.6; }
+.toast.warn .disc { background: var(--marker-solid); color: var(--on-marker); }
+.toast-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast-act {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--on-ink) 16%, transparent);
+  font-size: 13.5px;
+  font-weight: 700;
+  flex: none;
+}
+.toast-act:hover { background: color-mix(in oklab, var(--on-ink) 26%, transparent); }
+@keyframes toast {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.96); }
+}
+
+/* ---------- dialogs ---------- */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--scrim);
+  pointer-events: auto;
+  animation: fade 160ms ease;
+}
+.dialog {
+  width: min(500px, 100%);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 28px;
+  overflow: hidden;
+  animation: rise 220ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+@keyframes fade { from { opacity: 0; } }
+@keyframes rise { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+.dlg-hd { display: flex; align-items: center; gap: 10px; padding: 2px 0 0 6px; }
+.dlg-title { flex: 1; font-size: 21px; font-weight: 700; letter-spacing: -0.025em; }
+.target {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 22px;
+  background: var(--key);
+  box-shadow: var(--shadow-key);
+}
+.target:has(.shot) { padding: 8px 8px 12px; }
+.shot {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 15px;
+  background: var(--well);
+}
+.target-meta { display: flex; flex-direction: column; gap: 2px; padding: 0 6px; min-width: 0; }
+.target-meta b {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.target-meta .sel { white-space: normal; word-break: break-all; }
+.dialog .field { min-height: 112px; font-size: 16px; padding: 14px 16px; border-radius: 20px; }
+.dlg-ft { display: flex; align-items: center; gap: 8px; }
+.dlg-ft .hints { padding: 0 0 0 6px; margin-right: auto; gap: 6px 12px; }
+
+/* chat picker */
+.picker { width: min(520px, 100%); }
+.status { padding: 0 6px; font-size: 14px; color: var(--text-2); }
+.status.warn {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: var(--caution-soft);
+  color: var(--caution-text);
+  font-weight: 550;
+}
+.status.warn svg.i { width: 20px; height: 20px; margin-top: 1px; }
+.chats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  max-height: 52vh;
+  margin: 0 -4px;
+  padding: 2px 4px 6px;
+}
+.chat {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  width: 100%;
+  padding: 10px 14px 10px 10px;
+  border-radius: 22px;
+  background: var(--key);
+  box-shadow: var(--shadow-key);
+  transition: transform 90ms ease, background-color 120ms;
+}
+.chat:hover { background: var(--key-hover); }
+.chat:active { transform: translateY(1px); }
+.chat .disc { width: 44px; height: 44px; background: var(--ink); color: var(--on-ink); }
+.chat .disc svg.i { width: 20px; height: 20px; }
+.chat-text { min-width: 0; }
+.chat-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat .sel { display: block; }
+.now {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--signal-text);
+  white-space: nowrap;
+}
+.now::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+.opens { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- page highlight (what a click would pick) ---------- */
+
+.hl {
+  position: fixed;
+  left: 0;
+  top: 0;
+  display: none;
+  border: 2px solid var(--signal);
+  border-radius: 6px;
+  background: rgb(5 36 254 / 0.07);
+  box-shadow: 0 0 0 4px rgb(5 36 254 / 0.14);
+  pointer-events: none;
+}
+.hl-tag {
+  position: absolute;
+  left: -2px;
+  bottom: calc(100% + 6px);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 16px));
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: var(--signal);
+  color: var(--on-signal);
+  font: 650 12.5px/1 var(--font);
+  white-space: nowrap;
+  box-shadow: 0 6px 14px -6px var(--signal-glow);
+}
+.hl-tag b { font-weight: inherit; overflow: hidden; text-overflow: ellipsis; }
+.hl-tag span { opacity: 0.72; font-weight: 550; font-variant-numeric: tabular-nums; flex: none; }
+.hl.below .hl-tag { bottom: auto; top: calc(100% + 6px); }
+.hl.inside .hl-tag { bottom: auto; top: 4px; left: 4px; }
+`;
+
+  // src/fonts.js
+  var FACES = [
+    {
+      file: "onest-latin.woff2",
+      unicodeRange: "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD"
+    },
+    {
+      file: "onest-cyrillic.woff2",
+      unicodeRange: "U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116"
+    }
+  ];
+  var readFont = (file) => new Promise((resolve) => {
     try {
-      await navigator.clipboard.writeText(text);
-      flash(okMsg);
-    } catch (err) {
-      console.warn("[tsayru] clipboard write failed:", err);
-      flash("clipboard error");
-    }
-  };
-  var copyAll = async () => {
-    const tasks = visibleTasks();
-    const text = formatTasks(state.tasks, state.filterHost, {
-      filterTag: state.filterTag
-    });
-    if (!text) {
-      flash("nothing to copy");
-      return;
-    }
-    await writeClipboard(text, "copied");
-    postBatch(tasks, null).then((p) => {
-      if (!p.ok) console.warn("[tsayru] inbox save skipped:", p.error);
-    });
-  };
-  var copyOne = async (task, displayIndex) => {
-    await writeClipboard(formatTask(task, displayIndex), "task copied");
-  };
-  var visibleTasks = () => {
-    let list = filterByHost(state.tasks, state.filterHost);
-    if (state.filterTag) {
-      list = list.filter((t) => taskTags(t.text).includes(state.filterTag));
-    }
-    return list;
-  };
-  var isContextInvalidated2 = (err) => /context invalidated|Extension context/i.test(String(err || ""));
-  var postBatch = (tasks, target) => new Promise((resolve) => {
-    const payload = {
-      tasks,
-      host: location.host,
-      filterHost: state.filterHost || null,
-      targetTabUrl: target?.url || null,
-      targetTabTitle: target?.title || null,
-      sentAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", path: "/tasks", body: payload, method: "POST" },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve({
-              ok: false,
-              error: resp?.error || chrome.runtime.lastError?.message || "no response"
-            });
-            return;
-          }
-          resolve({ ok: true, batchId: resp.data?.batchId });
-        }
-      );
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
-  var pushToWebChat = (tabId, content, images) => new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content, images },
-        (resp) => {
-          if (chrome.runtime.lastError || !resp || !resp.ok) {
-            resolve({
-              ok: false,
-              error: resp?.error || chrome.runtime.lastError?.message || "no response"
-            });
-            return;
-          }
-          resolve({ ok: true, ...resp });
-        }
-      );
-    } catch (err) {
-      resolve({ ok: false, error: String(err) });
-    }
-  });
-  var sendBatch = async (tasks, target) => {
-    const label = target?.title || "web chat";
-    const where2 = ` \u2192 ${label}`;
-    postBatch(tasks, target).then((p) => {
-      if (!p.ok) console.warn("[tsayru] inbox save failed:", p.error);
-    });
-    const md = formatTasks(tasks, state.filterHost, {
-      filterTag: state.filterTag,
-      screenshotMode: "attached"
-    });
-    const images = tasks.map((t) => t.screenshot).filter(Boolean);
-    const inject = await pushToWebChat(target.tabId, md, images);
-    if (inject.ok) {
-      flash(`sent${where2} \u2713`);
-      return;
-    }
-    console.warn("[tsayru] inject failed:", inject.error);
-    if (isContextInvalidated2(inject.error)) {
-      flash("reload page (Cmd+R)");
-    } else if (/chat input not found/i.test(String(inject.error))) {
-      flash(`inject failed: no chat input on this tab`);
-    } else {
-      flash(`inject failed${where2}`);
-    }
-  };
-  var sendToServer = async () => {
-    const tasks = visibleTasks();
-    if (tasks.length === 0) {
-      flash("nothing to send");
-      return;
-    }
-    const target = await pickTargetChat();
-    if (target === null) return;
-    sendBatch(tasks, target);
-  };
-  var pollDoneStatus = () => {
-    if (!refs.sidebar || refs.sidebar.classList.contains("tsayru-hidden")) return;
-    if (!state.tasks.some((t) => t.id && !t.done)) return;
-    try {
-      chrome.runtime.sendMessage(
-        { type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" },
-        (resp) => {
-          void chrome.runtime.lastError;
-          const ids = resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
-          if (!ids || ids.length === 0) return;
-          const doneIds = new Set(ids);
-          let changed2 = false;
-          for (const t of state.tasks) {
-            if (t.id && !t.done && doneIds.has(t.id)) {
-              t.done = true;
-              changed2 = true;
-            }
-          }
-          if (changed2) {
-            persist();
-            renderSidebar();
-          }
-        }
-      );
+      chrome.runtime.sendMessage({ type: "TSAYRU_FONT", file }, (resp) => {
+        void chrome.runtime.lastError;
+        resolve(resp?.ok ? resp.data : null);
+      });
     } catch {
+      resolve(null);
     }
+  });
+  var toBytes = (base64) => {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
   };
-  var donePollTimer = null;
-  var ensureDonePolling = () => {
-    if (donePollTimer) return;
-    donePollTimer = setInterval(pollDoneStatus, 1e4);
-  };
-  var onTaskHover = (selector) => {
-    if (state.inspecting) return;
-    if (!selector) return;
-    ensureOverlay();
-    moveHighlight(queryDeep(selector));
-  };
-  var onTaskLeave = () => {
-    if (state.inspecting) return;
-    moveHighlight(null);
-  };
-  var clearTasks = () => {
-    if (state.tasks.length === 0) return;
-    const removed = visibleTasks();
-    if (removed.length === 0) return;
-    const removedSet = new Set(removed);
-    state.tasks = state.tasks.filter((t) => !removedSet.has(t));
-    state.editingTaskIndex = null;
-    persist();
-    renderSidebar();
-    flashAction(
-      `cleared ${removed.length} task${plural(removed.length)}`,
-      "undo",
-      () => {
-        state.tasks.push(...removed);
-        persist();
-        renderSidebar();
-      }
-    );
-  };
-  var renderTask = (task, idx, displayNum) => {
-    if (state.editingTaskIndex === idx) {
-      const ta = el("textarea", { class: "tsayru-task-edit-input", rows: 3 });
-      ta.value = task.text;
-      setTimeout(() => {
-        ta.focus();
-        ta.setSelectionRange(ta.value.length, ta.value.length);
-      }, 0);
-      const save = () => {
-        const v = ta.value.trim();
-        if (!v) {
-          ta.focus();
-          return;
-        }
-        state.tasks[idx].text = v;
-        state.editingTaskIndex = null;
-        persist();
-        renderSidebar();
-      };
-      const cancel = () => {
-        state.editingTaskIndex = null;
-        renderSidebar();
-      };
-      ta.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          save();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          cancel();
-        }
+  var loading = null;
+  var ensureFonts = () => loading ||= Promise.all(
+    FACES.map(async ({ file, unicodeRange }) => {
+      const data = await readFont(file);
+      if (!data) return;
+      const face = new FontFace(FONT_FAMILY, toBytes(data), {
+        weight: "100 900",
+        unicodeRange
       });
-      return el(
-        "div",
-        { class: "tsayru-task tsayru-task-editing" },
-        el(
-          "div",
-          { class: "tsayru-task-head" },
-          el("span", { class: "tsayru-task-num" }, `#${displayNum}`),
-          el("span", { class: "tsayru-task-label" }, task.label),
-          el(
-            "button",
-            {
-              class: "tsayru-task-save",
-              title: "Save (Enter)",
-              onClick: save
-            },
-            "\u2713"
-          ),
-          el(
-            "button",
-            {
-              class: "tsayru-task-cancel",
-              title: "Cancel (Esc)",
-              onClick: cancel
-            },
-            "\u21A9"
-          )
-        ),
-        el("div", { class: "tsayru-task-sel" }, task.selector),
-        ta
-      );
-    }
-    return el(
-      "div",
-      {
-        class: "tsayru-task" + (task.done ? " tsayru-task-done" : ""),
-        onMouseEnter: () => onTaskHover(task.selector),
-        onMouseLeave: onTaskLeave
-      },
-      el(
-        "div",
-        { class: "tsayru-task-head" },
-        el("span", { class: "tsayru-task-num" }, `#${displayNum}`),
-        el("span", { class: "tsayru-task-label" }, task.label),
-        el(
-          "button",
-          {
-            class: "tsayru-task-copy",
-            title: "Copy this task",
-            onClick: () => copyOne(task, displayNum)
-          },
-          "\u29C9"
-        ),
-        el(
-          "button",
-          {
-            class: "tsayru-task-edit",
-            title: "Edit",
-            onClick: () => {
-              state.editingTaskIndex = idx;
-              renderSidebar();
-            }
-          },
-          "\u270E"
-        ),
-        el(
-          "button",
-          {
-            class: "tsayru-task-del",
-            title: "Delete",
-            onClick: () => {
-              state.tasks.splice(idx, 1);
-              if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
-              else if (state.editingTaskIndex !== null && state.editingTaskIndex > idx) {
-                state.editingTaskIndex -= 1;
-              }
-              persist();
-              renderSidebar();
-            }
-          },
-          "\xD7"
-        )
-      ),
-      el("div", { class: "tsayru-task-sel" }, task.selector),
-      // Style-editor tasks speak through their change list; no nag for text.
-      task.text || !task.styleChanges?.length ? el(
-        "div",
-        {
-          class: "tsayru-task-text" + (task.text ? "" : " tsayru-task-text-empty")
-        },
-        task.text || "no description \u2014 click \u270E to add"
-      ) : null,
-      task.styleChanges?.length ? styleSummary(task.styleChanges) : null
-    );
-  };
-  var styleSummary = (changes) => {
-    const props = [...new Set(changes.map((c) => c.property))];
-    const shown = props.slice(0, 4).join(", ") + (props.length > 4 ? ", \u2026" : "");
-    return el(
-      "div",
-      {
-        class: "tsayru-task-style",
-        title: changes.map((c) => `${c.property}: ${c.before ?? "\u2014"} \u2192 ${c.after ?? "removed"}`).join("\n")
-      },
-      `${changes.length} style change${plural(changes.length)} \xB7 ${shown}`
-    );
-  };
-  var renderSidebar = () => {
-    if (!refs.sidebar) return;
-    const list = refs.sidebar.querySelector(".tsayru-list");
-    list.innerHTML = "";
-    const hosts = [
-      ...new Set(state.tasks.map((t) => safeHost(t.url)).filter(Boolean))
-    ];
-    if (state.filterHost && !hosts.includes(state.filterHost)) {
-      state.filterHost = null;
-    }
-    const hostScoped = filterByHost(state.tasks, state.filterHost);
-    const allTags = [...new Set(hostScoped.flatMap((t) => taskTags(t.text)))];
-    if (state.filterTag && !allTags.includes(state.filterTag)) {
-      state.filterTag = null;
-    }
-    if (hosts.length > 1) {
-      const tabs = el("div", { class: "tsayru-tabs" });
-      const mkTab = (label, value, count) => {
-        const active = state.filterHost === value;
-        return el(
-          "button",
-          {
-            class: "tsayru-tab" + (active ? " tsayru-tab-active" : ""),
-            onClick: () => {
-              state.filterHost = value;
-              renderSidebar();
-            }
-          },
-          `${label} \xB7 ${count}`
-        );
-      };
-      tabs.appendChild(mkTab("All", null, state.tasks.length));
-      for (const h of hosts) {
-        const n = state.tasks.filter((t) => safeHost(t.url) === h).length;
-        tabs.appendChild(mkTab(h, h, n));
-      }
-      list.appendChild(tabs);
-    }
-    if (allTags.length > 0) {
-      const row = el("div", { class: "tsayru-tagrow" });
-      for (const tag of allTags) {
-        const n = hostScoped.filter((t) => taskTags(t.text).includes(tag)).length;
-        const active = state.filterTag === tag;
-        row.appendChild(
-          el(
-            "button",
-            {
-              class: "tsayru-tagchip" + (active ? " tsayru-tagchip-active" : ""),
-              onClick: () => {
-                state.filterTag = active ? null : tag;
-                renderSidebar();
-              }
-            },
-            `#${tag} \xB7 ${n}`
-          )
-        );
-      }
-      list.appendChild(row);
-    }
-    const filtered = visibleTasks();
-    if (filtered.length === 0) {
-      list.appendChild(
-        el(
-          "div",
-          { class: "tsayru-empty" },
-          state.filterHost || state.filterTag ? `No tasks for ${[state.filterHost, state.filterTag && `#${state.filterTag}`].filter(Boolean).join(" \xB7 ")}.` : "Enable the inspector and click an element to add a task."
-        )
-      );
-    } else {
-      filtered.forEach((task, fi) => {
-        const idx = state.tasks.indexOf(task);
-        list.appendChild(renderTask(task, idx, fi + 1));
-      });
-    }
-    const counter = refs.sidebar.querySelector(".tsayru-counter");
-    counter.textContent = state.tasks.length ? `${state.tasks.length} task${plural(state.tasks.length)}` : "empty";
-    const inspectBtn = refs.sidebar.querySelector(".tsayru-inspect-btn");
-    inspectBtn.classList.toggle("tsayru-active", state.inspecting);
-    inspectBtn.textContent = state.inspecting ? "Disable inspector" : "Enable inspector";
-  };
-  var ensureSidebar = () => {
-    if (refs.sidebar) return;
-    refs.sidebar = el(
-      "div",
-      { class: "tsayru-sidebar" },
-      el(
-        "div",
-        { class: "tsayru-header" },
-        el("div", { class: "tsayru-title" }, "tsayru"),
-        el("div", { class: "tsayru-counter" }, "empty"),
-        el(
-          "button",
-          {
-            class: "tsayru-close",
-            title: "Hide (turns inspector off)",
-            onClick: () => hideSidebar()
-          },
-          "\u2014"
-        )
-      ),
-      el(
-        "div",
-        { class: "tsayru-controls" },
-        el(
-          "button",
-          {
-            class: "tsayru-inspect-btn",
-            onClick: () => toggleInspector()
-          },
-          "Enable inspector"
-        ),
-        el(
-          "button",
-          { class: "tsayru-copy-btn", onClick: copyAll },
-          "Copy all"
-        ),
-        el(
-          "button",
-          {
-            class: "tsayru-send-btn",
-            title: "Send batch to an open claude.ai / claude.com tab (auto-submit)",
-            onClick: sendToServer
-          },
-          "To Claude"
-        ),
-        el(
-          "button",
-          { class: "tsayru-clear-btn", onClick: clearTasks },
-          "Clear"
-        )
-      ),
-      el("div", { class: "tsayru-list" })
-    );
-    document.documentElement.appendChild(refs.sidebar);
-    ensureDonePolling();
-    renderSidebar();
-  };
+      document.fonts.add(face);
+      await face.load();
+    })
+  ).catch((err) => console.warn("[tsayru] UI font failed to load:", err));
 
-  // src/modal.js
-  var closeModal = () => {
-    if (refs.modal) {
-      refs.modal.remove();
-      refs.modal = null;
-    }
+  // src/icons.js
+  var NS = "http://www.w3.org/2000/svg";
+  var svg = (attrs, children = []) => {
+    const node = document.createElementNS(NS, attrs.tag || "svg");
+    for (const [k, v] of Object.entries(attrs)) if (k !== "tag") node.setAttribute(k, v);
+    for (const c of children) node.appendChild(c);
+    return node;
   };
-  var requestClose = () => {
-    const ta = refs.modal?.querySelector(".tsayru-modal-input");
-    if (ta && ta.value.trim() && !confirm("Discard this task draft?")) return;
-    closeModal();
+  var path = (d) => svg({ tag: "path", d });
+  var circle = (cx, cy, r, fill) => svg({ tag: "circle", cx, cy, r, ...fill ? { class: "fill" } : {} });
+  var rect = (x, y, width, height, rx) => svg({ tag: "rect", x, y, width, height, rx });
+  var ICONS = {
+    target: () => [circle(12, 12, 7.5), circle(12, 12, 2.6, true), path("M12 1.5V5M12 19v3.5M1.5 12H5M19 12h3.5")],
+    sliders: () => [path("M4 7h8.5M17.5 7H20M4 17h2.5M11.5 17H20"), circle(15, 7, 2.5), circle(9, 17, 2.5)],
+    send: () => [path("M21 3 10.5 13.5"), path("M21 3 14.5 21l-4-7.5L3 9.5z")],
+    copy: () => [
+      rect(8.5, 8.5, 12, 12, 3),
+      path("M15.5 8.5v-2a3 3 0 0 0-3-3h-6a3 3 0 0 0-3 3v6a3 3 0 0 0 3 3h2")
+    ],
+    trash: () => [
+      path("M4 6.5h16"),
+      path("M9.5 6.5v-2A1.5 1.5 0 0 1 11 3h2a1.5 1.5 0 0 1 1.5 1.5v2"),
+      path("m6 6.5.9 12.6a2 2 0 0 0 2 1.9h6.2a2 2 0 0 0 2-1.9L18 6.5")
+    ],
+    hide: () => [path("m9.5 6 6 6-6 6")],
+    close: () => [path("m6.5 6.5 11 11M17.5 6.5l-11 11")],
+    edit: () => [path("m4 20 1-4.5L15.8 4.7a2.1 2.1 0 0 1 3 0l.5.5a2.1 2.1 0 0 1 0 3L8.5 19z"), path("m13.5 7 3.5 3.5")],
+    check: () => [path("m5 12.5 4.5 4.5L19 7")],
+    chat: () => [
+      path("M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17A1.5 1.5 0 0 1 4 15.5z")
+    ],
+    hash: () => [path("M5 9h14M5 15h14M10 4 8 20M16 4l-2 16")],
+    alert: () => [
+      path("M10.3 3.9 2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"),
+      path("M12 9.5v4"),
+      path("M12 17h.01")
+    ],
+    external: () => [path("M14 4h6v6M20 4l-9 9"), path("M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4")]
   };
-  var addTask = async (selector, label, text, frameworkPromise, ctx) => {
-    const framework = await Promise.race([
-      frameworkPromise || Promise.resolve(null),
-      new Promise((resolve) => setTimeout(() => resolve(null), 250))
-    ]);
-    state.tasks.push({
-      // Stable id — the done-status sync from the server matches on it.
-      id: crypto.randomUUID(),
-      selector,
-      label,
-      text,
-      url: location.href,
-      framework: framework || null,
-      computedStyles: ctx?.computedStyles || null,
-      screenshot: ctx?.screenshot || null,
-      html: ctx?.html || null,
-      env: ctx?.env || null,
-      pageErrors: ctx?.pageErrors?.length ? ctx.pageErrors : null,
-      done: false,
-      addedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    await persist();
-    renderSidebar();
-    bus.emit("task-added");
-  };
-  var quickAddTask = async (target, ctx) => {
-    const selector = buildSelector(target);
-    const label = shortLabel(target);
-    const frameworkPromise = detectFramework(target).catch(() => null);
-    await addTask(selector, label, "", frameworkPromise, ctx);
-  };
-  var submitTask = async (selector, label, frameworkPromise, ctx) => {
-    if (!refs.modal) return;
-    if (refs.modal.__submitting) return;
-    refs.modal.__submitting = true;
-    const ta = refs.modal.querySelector(".tsayru-modal-input");
-    const text = ta.value.trim();
-    if (!text) {
-      refs.modal.__submitting = false;
-      ta.focus();
-      return;
-    }
-    await addTask(selector, label, text, frameworkPromise, ctx);
-    closeModal();
-  };
-  var openModal = (target, ctx = {}) => {
-    closeModal();
-    const selector = buildSelector(target);
-    const label = shortLabel(target);
-    const frameworkPromise = detectFramework(target).catch(() => null);
-    const screenshot = ctx.screenshot || null;
-    refs.modal = el(
-      "div",
-      {
-        class: "tsayru-modal-backdrop",
-        onClick: (e) => {
-          if (e.target === refs.modal) requestClose();
-        }
-      },
-      el(
-        "div",
-        { class: "tsayru-modal" },
-        el(
-          "div",
-          { class: "tsayru-modal-head" },
-          el("div", { class: "tsayru-modal-title" }, "Task for this element"),
-          el(
-            "button",
-            { class: "tsayru-modal-close", onClick: requestClose },
-            "\xD7"
-          )
-        ),
-        el(
-          "div",
-          { class: "tsayru-modal-meta" },
-          el("div", { class: "tsayru-modal-label" }, label),
-          el("div", { class: "tsayru-modal-sel" }, selector),
-          screenshot ? el("img", { class: "tsayru-modal-thumb", src: screenshot, alt: "" }) : null
-        ),
-        el("textarea", {
-          class: "tsayru-modal-input",
-          placeholder: "What should change here? (Enter to add, Shift+Enter for newline)",
-          rows: 4
+  var icon = (name) => svg({ class: "i", viewBox: "0 0 24 24", "aria-hidden": "true", focusable: "false" }, ICONS[name]());
+  var NEEDLE = "M1157 -71.5 543.6 537.9 535.5 546c-67.5 67.5-67.5 176.9 0 244.4l8.1 8.1-81.5 81.5-8.1-8.1c-67.5-67.5-176.9-67.5-244.4 0l-8.1 8.1-81.5-81.5 8.1-8.1c67.5-67.5 67.5-176.9 0-244.4l-8.1-8.1 81.5-81.5 8.1 8.1c67.5 67.5 176.9 67.5 244.4 0l8.1-8.1L1075.5 -153z";
+  var brandMark = () => svg({ viewBox: "0 0 1000 1000", "aria-hidden": "true", focusable: "false" }, [
+    svg({ tag: "path", d: NEEDLE, fill: "#fad620" })
+  ]);
+  var grainId = 0;
+  var grain = () => {
+    const id = `tsayru-grain-${++grainId}`;
+    const matrix = (values, result) => svg({ tag: "feColorMatrix", in: "n", type: "matrix", values, result });
+    return svg({ class: "grain", "aria-hidden": "true", focusable: "false" }, [
+      svg({ tag: "filter", id, x: "0", y: "0", width: "100%", height: "100%" }, [
+        svg({
+          tag: "feTurbulence",
+          type: "fractalNoise",
+          baseFrequency: "0.95",
+          numOctaves: "1",
+          seed: "4",
+          stitchTiles: "stitch",
+          result: "n"
         }),
-        el(
-          "div",
-          { class: "tsayru-modal-footer" },
-          el(
-            "button",
-            { class: "tsayru-modal-cancel", onClick: requestClose },
-            "Cancel"
-          ),
-          el(
-            "button",
-            {
-              class: "tsayru-modal-submit",
-              onClick: () => submitTask(selector, label, frameworkPromise, ctx)
-            },
-            "Add (Enter)"
-          )
-        )
-      )
-    );
-    document.documentElement.appendChild(refs.modal);
-    const ta = refs.modal.querySelector(".tsayru-modal-input");
-    ta.focus();
-    ta.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        submitTask(selector, label, frameworkPromise, ctx);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        requestClose();
-      }
-    });
+        matrix("0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  14 0 0 0 -9.1", "hi"),
+        matrix("0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 -14 0 0 4.6", "lo"),
+        svg({ tag: "feMerge" }, [svg({ tag: "feMergeNode", in: "lo" }), svg({ tag: "feMergeNode", in: "hi" })])
+      ]),
+      svg({ tag: "rect", width: "100%", height: "100%", filter: `url(#${id})` })
+    ]);
   };
+
+  // src/ui.js
+  var layer = null;
+  var dialogs = [];
+  var onKey = (e) => {
+    if (e.type === "keydown" && e.key === "Escape" && dialogs.length) {
+      e.preventDefault();
+      dialogs[dialogs.length - 1].onEscape();
+      return;
+    }
+    bus.emit("ui-key", e);
+  };
+  var onPageEscape = (e) => {
+    if (e.key !== "Escape" || !dialogs.length || isOurHost(e.target)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    dialogs[dialogs.length - 1].onEscape();
+  };
+  var uiLayer = () => {
+    if (layer) return layer;
+    const host2 = createShadowHost({
+      tag: "tsayru-ui",
+      className: "tsayru-ui-host",
+      css: UI_CSS,
+      onKey
+    });
+    layer = el("div", { class: "ui" });
+    host2.root.appendChild(layer);
+    refs.ui = host2.node;
+    ensureFonts();
+    return layer;
+  };
+  var openDialog = ({ className = "", label, onEscape }) => {
+    const dialog2 = el("div", {
+      class: `dialog shell${className ? ` ${className}` : ""}`,
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": label
+    });
+    dialog2.appendChild(grain());
+    const scrim = el(
+      "div",
+      {
+        class: "scrim",
+        onClick: (e) => {
+          if (e.target === scrim) onEscape();
+        }
+      },
+      dialog2
+    );
+    const entry = { onEscape };
+    dialogs.push(entry);
+    if (dialogs.length === 1) window.addEventListener("keydown", onPageEscape, true);
+    uiLayer().appendChild(scrim);
+    return {
+      scrim,
+      dialog: dialog2,
+      close() {
+        scrim.remove();
+        const i = dialogs.indexOf(entry);
+        if (i >= 0) dialogs.splice(i, 1);
+        if (!dialogs.length) window.removeEventListener("keydown", onPageEscape, true);
+      }
+    };
+  };
+  var dialogHeader = (title, onClose) => el(
+    "div",
+    { class: "dlg-hd" },
+    el("div", { class: "dlg-title" }, title),
+    el("button", { class: "round", title: "Close (Esc)", "aria-label": "Close", onClick: onClose }, icon("close"))
+  );
+  var current = null;
+  var toast = (message, { warn: warn2 = false, iconName, action, ttl } = {}) => {
+    current?.dismiss();
+    const node = el(
+      "div",
+      {
+        class: `toast${warn2 ? " warn" : ""}${action ? " has-act" : ""}`,
+        role: "status",
+        "aria-live": "polite"
+      },
+      el("span", { class: "disc" }, icon(iconName || (warn2 ? "alert" : "check"))),
+      el("span", { class: "toast-msg" }, message)
+    );
+    let timer = 0;
+    const self = {
+      dismiss() {
+        clearTimeout(timer);
+        node.remove();
+        if (current === self) current = null;
+      }
+    };
+    if (action) {
+      node.appendChild(
+        el(
+          "button",
+          {
+            class: "toast-act",
+            onClick: () => {
+              self.dismiss();
+              action.run();
+            }
+          },
+          action.label
+        )
+      );
+    }
+    timer = setTimeout(() => self.dismiss(), ttl ?? (action ? 8e3 : warn2 ? 3200 : 1800));
+    current = self;
+    uiLayer().appendChild(node);
+  };
+  var hints = (pairs) => el(
+    "div",
+    { class: "hints" },
+    ...pairs.map(
+      ([keys, what]) => el("span", { class: "hint" }, el("span", { class: "kbd" }, keys), what)
+    )
+  );
 
   // src/cssrules.js
   var STATES = [
@@ -1494,9 +1693,9 @@
     return out.map((p) => p.trim()).filter(Boolean);
   };
   var splitSelectorList = (text) => splitTopLevel(text, ",");
-  var closingParen = (s, open2) => {
+  var closingParen = (s, open3) => {
     let depth = 0;
-    for (let i = open2; i < s.length; i++) {
+    for (let i = open3; i < s.length; i++) {
       if (s[i] === "(") depth++;
       else if (s[i] === ")" && --depth === 0) return i;
     }
@@ -1515,9 +1714,9 @@
     const fn = /:(not|has)\(/gi;
     let m;
     while (m = fn.exec(s)) {
-      const open2 = m.index + m[0].length - 1;
-      const close = closingParen(s, open2);
-      out += s.slice(from, open2 + 1) + hide(s.slice(open2 + 1, close));
+      const open3 = m.index + m[0].length - 1;
+      const close = closingParen(s, open3);
+      out += s.slice(from, open3 + 1) + hide(s.slice(open3 + 1, close));
       from = close;
       fn.lastIndex = close;
     }
@@ -1558,12 +1757,12 @@
       const fn = /:(is|where|matches|-webkit-any)\(/gi;
       let m;
       while (depth < 3 && (m = fn.exec(masked))) {
-        const open2 = m.index + m[0].length - 1;
-        const close = closingParen(masked, open2);
-        const args = splitTopLevel(masked.slice(open2 + 1, close), ",");
+        const open3 = m.index + m[0].length - 1;
+        const close = closingParen(masked, open3);
+        const args = splitTopLevel(masked.slice(open3 + 1, close), ",");
         if (args.length > 1 && args.some((a) => STATE_TEST.test(restore2(a)))) {
           for (const a of args) {
-            walk(restore2(`${masked.slice(0, open2 + 1)}${a}${masked.slice(close)}`), depth + 1);
+            walk(restore2(`${masked.slice(0, open3 + 1)}${a}${masked.slice(close)}`), depth + 1);
           }
           return;
         }
@@ -1582,10 +1781,10 @@
     const fn = /:(where|is|not|has|matches|-webkit-any)\(/gi;
     let m;
     while (m = fn.exec(s)) {
-      const open2 = m.index + m[0].length - 1;
-      const close = closingParen(s, open2);
+      const open3 = m.index + m[0].length - 1;
+      const close = closingParen(s, open3);
       if (m[1].toLowerCase() !== "where") {
-        const best = splitSelectorList(s.slice(open2 + 1, close)).map(specificity).sort(compareSpecificity).pop() || [0, 0, 0];
+        const best = splitSelectorList(s.slice(open3 + 1, close)).map(specificity).sort(compareSpecificity).pop() || [0, 0, 0];
         a += best[0];
         b += best[1];
         c += best[2];
@@ -1646,8 +1845,8 @@
     }
     return "stylesheet";
   };
-  var shortPath = (path) => {
-    const p = String(path || "").split("?")[0];
+  var shortPath = (path2) => {
+    const p = String(path2 || "").split("?")[0];
     const marker = p.search(/\/(src|client|app|styles|components|pages)\//);
     if (marker >= 0) return p.slice(marker + 1);
     return p.split("/").filter(Boolean).slice(-3).join("/");
@@ -1708,8 +1907,8 @@
       active: ctx.active && active
     });
     const inLayer = (ctx, name) => {
-      const layer = subLayer(ctx.layer, name);
-      return { ...ctx, layer, layerRank: noteLayer(layer) };
+      const layer2 = subLayer(ctx.layer, name);
+      return { ...ctx, layer: layer2, layerRank: noteLayer(layer2) };
     };
     const walkList = (rules, ctx) => {
       let list;
@@ -2197,10 +2396,10 @@
       text,
       el("span", { class: "alpha" }, alpha)
     );
-    const current = () => colorOf(read()) || { r: 0, g: 0, b: 0, a: 1 };
+    const current2 = () => colorOf(read()) || { r: 0, g: 0, b: 0, a: 1 };
     const alphaNow = () => {
       const n = parseFloat(alpha.value);
-      return Number.isNaN(n) ? current().a : clamp2(n / 100, 0, 1);
+      return Number.isNaN(n) ? current2().a : clamp2(n / 100, 0, 1);
     };
     const alphaForNew = () => {
       const a = alphaNow();
@@ -2230,7 +2429,7 @@
     const applyAlpha = () => {
       const n = parseFloat(alpha.value);
       if (Number.isNaN(n)) return;
-      put(formatColor({ ...current(), a: clamp2(n / 100, 0, 1) }));
+      put(formatColor({ ...current2(), a: clamp2(n / 100, 0, 1) }));
     };
     alpha.addEventListener("input", applyAlpha);
     bindKeys(alpha, { prop: "alpha", fallback: () => "100", display: (v) => String(clamp2(parseFloat(v), 0, 100)), apply: applyAlpha });
@@ -2267,31 +2466,921 @@
     ...children
   );
 
+  // src/screenshot.js
+  var PADDING = 48;
+  var OUTLINE_COLOR = "#ff3b30";
+  var MAX_WIDTH = 800;
+  var JPEG_QUALITY = 0.85;
+  var requestFullCapture = () => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "TSAYRU_CAPTURE" }, (resp) => {
+        if (chrome.runtime.lastError) {
+          resolve({ dataUrl: null, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve({
+          dataUrl: resp?.dataUrl || null,
+          error: resp?.dataUrl ? null : resp?.error || "no response"
+        });
+      });
+    } catch (err) {
+      resolve({ dataUrl: null, error: String(err) });
+    }
+  });
+  var captureErrorMessage = (raw) => {
+    const s = String(raw || "");
+    if (/activeTab|permission|not in effect|cannot access/i.test(s)) {
+      return "No screenshot access. Click the tsayru toolbar icon once";
+    }
+    if (/MAX_CAPTURE_VISIBLE_TAB|per second/i.test(s)) {
+      return "Too many screenshots at once. Try again in a second";
+    }
+    return "Screenshot failed";
+  };
+  var reportCaptureError = (raw) => {
+    window.dispatchEvent(
+      new CustomEvent("tsayru-capture-error", {
+        detail: { message: captureErrorMessage(raw) }
+      })
+    );
+  };
+  var loadImage = (dataUrl) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+  var cropToDataUrl = (img, rect2) => {
+    if (rect2.width === 0 || rect2.height === 0) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const sx = Math.round(Math.max(0, (rect2.left - PADDING) * dpr));
+    const sy = Math.round(Math.max(0, (rect2.top - PADDING) * dpr));
+    const sxRight = Math.round(
+      Math.min((rect2.left + rect2.width + PADDING) * dpr, img.width)
+    );
+    const syBottom = Math.round(
+      Math.min((rect2.top + rect2.height + PADDING) * dpr, img.height)
+    );
+    const sw = sxRight - sx;
+    const sh = syBottom - sy;
+    if (sw <= 0 || sh <= 0) return null;
+    const cssW = sw / dpr;
+    const cssH = sh / dpr;
+    const scale = Math.min(1, MAX_WIDTH / cssW);
+    const outW = Math.max(1, Math.round(cssW * scale * dpr));
+    const outH = Math.max(1, Math.round(cssH * scale * dpr));
+    const canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+    const outScale = outW / sw;
+    const ex = (rect2.left * dpr - sx) * outScale;
+    const ey = (rect2.top * dpr - sy) * outScale;
+    const ew = rect2.width * dpr * outScale;
+    const eh = rect2.height * dpr * outScale;
+    ctx.strokeStyle = OUTLINE_COLOR;
+    ctx.lineWidth = Math.max(2, Math.round(2 * dpr * outScale));
+    ctx.strokeRect(ex, ey, ew, eh);
+    return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+  };
+  var withHiddenUI = async (fn) => {
+    const nodes = [refs.ui, refs.styleHost].filter(Boolean);
+    const prev = nodes.map((n) => [
+      n.style.getPropertyValue("visibility"),
+      n.style.getPropertyPriority("visibility")
+    ]);
+    for (const n of nodes) n.style.setProperty("visibility", "hidden", "important");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    try {
+      return await fn();
+    } finally {
+      nodes.forEach((n, i) => {
+        const [value, priority] = prev[i];
+        if (value) n.style.setProperty("visibility", value, priority);
+        else n.style.removeProperty("visibility");
+      });
+    }
+  };
+  var captureElement = async (target) => {
+    if (!(target instanceof Element)) return null;
+    let rect2 = target.getBoundingClientRect();
+    if (rect2.width === 0 || rect2.height === 0) return null;
+    if (rect2.top < 0 || rect2.left < 0 || rect2.bottom > window.innerHeight || rect2.right > window.innerWidth) {
+      try {
+        target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch {
+      }
+      await new Promise(
+        (r) => requestAnimationFrame(() => requestAnimationFrame(r))
+      );
+      rect2 = target.getBoundingClientRect();
+    }
+    return withHiddenUI(async () => {
+      const { dataUrl, error } = await requestFullCapture();
+      if (!dataUrl) {
+        reportCaptureError(error);
+        return null;
+      }
+      const img = await loadImage(dataUrl);
+      if (!img) return null;
+      return cropToDataUrl(img, rect2);
+    });
+  };
+
+  // src/chatpicker.js
+  var isContextInvalidated = (err) => /context invalidated|Extension context/i.test(String(err || ""));
+  var fetchOnlineTabs = () => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "TSAYRU_LIST_TABS" }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          resolve({
+            ok: false,
+            error: resp?.error || chrome.runtime.lastError?.message || "no response"
+          });
+          return;
+        }
+        resolve({ ok: true, tabs: resp.tabs || [] });
+      });
+    } catch (err) {
+      resolve({ ok: false, error: String(err) });
+    }
+  });
+  var openTab = (url) => {
+    try {
+      chrome.runtime.sendMessage({ type: "TSAYRU_OPEN_TAB", url });
+    } catch {
+    }
+  };
+  var renderItem = (entry, onPick) => {
+    let urlLabel = entry.url;
+    try {
+      const u = new URL(entry.url);
+      urlLabel = u.host + (u.pathname.length > 1 ? u.pathname : "");
+    } catch {
+    }
+    return el(
+      "button",
+      { class: "chat", title: entry.url, onClick: () => onPick(entry) },
+      el("span", { class: "disc" }, icon("chat")),
+      el(
+        "span",
+        { class: "chat-text" },
+        el("span", { class: "chat-title" }, entry.title || "Untitled chat"),
+        el("span", { class: "sel" }, urlLabel)
+      ),
+      entry.active ? el("span", { class: "now" }, "Open now") : el("span")
+    );
+  };
+  var warning = (...children) => el("div", { class: "status warn" }, icon("alert"), el("div", {}, ...children));
+  var open = null;
+  var pickTargetChat = () => new Promise((resolve) => {
+    open?.finish(null);
+    let resolved = false;
+    const finish2 = (value) => {
+      if (resolved) return;
+      resolved = true;
+      dialog2.close();
+      if (open?.finish === finish2) open = null;
+      resolve(value);
+    };
+    const dialog2 = openDialog({
+      className: "picker",
+      label: "Send to which chat?",
+      onEscape: () => finish2(null)
+    });
+    open = { finish: finish2 };
+    const status = el("div", { class: "status" }, "Looking for open Claude chats\u2026");
+    const list = el("div", { class: "chats" });
+    const footer = el(
+      "div",
+      { class: "dlg-ft" },
+      el("span", { class: "hints" }),
+      el("button", { class: "btn quiet", onClick: () => finish2(null) }, "Cancel")
+    );
+    dialog2.dialog.append(dialogHeader("Send to which chat?", () => finish2(null)), status, list, footer);
+    fetchOnlineTabs().then((res) => {
+      if (resolved) return;
+      list.replaceChildren();
+      if (!res.ok) {
+        status.replaceWith(
+          isContextInvalidated(res.error) ? warning(`tsayru was updated. Reload this page (${IS_MAC ? "\u2318R" : "F5"}) and send again.`) : warning(`Couldn't list the open tabs: ${res.error}`)
+        );
+        return;
+      }
+      const tabs = res.tabs;
+      if (tabs.length === 0) {
+        status.textContent = "No Claude chat is open. Open one, then press Send again.";
+        const go = (url) => () => {
+          openTab(url);
+          finish2(null);
+        };
+        list.replaceWith(
+          el(
+            "div",
+            { class: "opens" },
+            el("button", { class: "btn primary", onClick: go("https://claude.ai/new") }, icon("external"), "Open claude.ai"),
+            el("button", { class: "btn quiet", onClick: go("https://claude.com") }, "claude.com")
+          )
+        );
+        return;
+      }
+      status.textContent = tabs.length === 1 ? "One Claude chat is open. The tasks are pasted in and sent right away." : "Pick a chat. The tasks are pasted in and sent right away.";
+      tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+      for (const t of tabs) {
+        const entry = {
+          kind: "online",
+          tabId: t.tabId,
+          url: t.url,
+          title: t.title,
+          active: t.active,
+          lastAccessed: t.lastAccessed
+        };
+        list.appendChild(renderItem(entry, finish2));
+      }
+      list.querySelector(".chat")?.focus();
+    });
+  });
+
+  // src/sidebar.js
+  var flash = (msg, opts) => toast(msg, opts);
+  var warn = (msg) => toast(msg, { warn: true });
+  window.addEventListener("tsayru-persist-error", (e) => {
+    warn(e?.detail?.message || "Couldn't save tasks");
+  });
+  window.addEventListener("tsayru-capture-error", (e) => {
+    warn(e?.detail?.message || "Screenshot failed");
+  });
+  var writeClipboard = async (text, okMsg) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(okMsg, { iconName: "copy" });
+    } catch (err) {
+      console.warn("[tsayru] clipboard write failed:", err);
+      warn("Couldn't write to the clipboard");
+    }
+  };
+  var copyAll = async () => {
+    const tasks = visibleTasks();
+    const text = formatTasks(state.tasks, state.filterHost, {
+      filterTag: state.filterTag
+    });
+    if (!text) {
+      warn("Nothing to copy yet");
+      return;
+    }
+    await writeClipboard(text, `Copied ${tasks.length} task${plural(tasks.length)}`);
+    postBatch(tasks, null).then((p) => {
+      if (!p.ok) console.warn("[tsayru] inbox save skipped:", p.error);
+    });
+  };
+  var copyOne = async (task, displayIndex) => {
+    await writeClipboard(formatTask(task, displayIndex), "Task copied");
+  };
+  var visibleTasks = () => {
+    let list = filterByHost(state.tasks, state.filterHost);
+    if (state.filterTag) {
+      list = list.filter((t) => taskTags(t.text).includes(state.filterTag));
+    }
+    return list;
+  };
+  var isContextInvalidated2 = (err) => /context invalidated|Extension context/i.test(String(err || ""));
+  var postBatch = (tasks, target) => new Promise((resolve) => {
+    const payload = {
+      tasks,
+      host: location.host,
+      filterHost: state.filterHost || null,
+      targetTabUrl: target?.url || null,
+      targetTabTitle: target?.title || null,
+      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    try {
+      chrome.runtime.sendMessage(
+        { type: "TSAYRU_SEND", path: "/tasks", body: payload, method: "POST" },
+        (resp) => {
+          if (chrome.runtime.lastError || !resp || !resp.ok) {
+            resolve({
+              ok: false,
+              error: resp?.error || chrome.runtime.lastError?.message || "no response"
+            });
+            return;
+          }
+          resolve({ ok: true, batchId: resp.data?.batchId });
+        }
+      );
+    } catch (err) {
+      resolve({ ok: false, error: String(err) });
+    }
+  });
+  var pushToWebChat = (tabId, content, images) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(
+        { type: "TSAYRU_PUSH_CLAUDE_AI", tabId, content, images },
+        (resp) => {
+          if (chrome.runtime.lastError || !resp || !resp.ok) {
+            resolve({
+              ok: false,
+              error: resp?.error || chrome.runtime.lastError?.message || "no response"
+            });
+            return;
+          }
+          resolve({ ok: true, ...resp });
+        }
+      );
+    } catch (err) {
+      resolve({ ok: false, error: String(err) });
+    }
+  });
+  var sendBatch = async (tasks, target) => {
+    const label = target?.title || "the chat";
+    postBatch(tasks, target).then((p) => {
+      if (!p.ok) console.warn("[tsayru] inbox save failed:", p.error);
+    });
+    const md = formatTasks(tasks, state.filterHost, {
+      filterTag: state.filterTag,
+      screenshotMode: "attached"
+    });
+    const images = tasks.map((t) => t.screenshot).filter(Boolean);
+    const inject = await pushToWebChat(target.tabId, md, images);
+    if (inject.ok) {
+      flash(`Sent to ${label}`, { iconName: "send" });
+      return;
+    }
+    console.warn("[tsayru] inject failed:", inject.error);
+    if (isContextInvalidated2(inject.error)) {
+      warn(`tsayru was updated. Reload this page (${IS_MAC ? "\u2318R" : "F5"})`);
+    } else if (/chat input not found/i.test(String(inject.error))) {
+      warn("No chat input on that tab. Open a chat there and try again");
+    } else {
+      warn(`Couldn't send to ${label}`);
+    }
+  };
+  var sendToServer = async () => {
+    const tasks = visibleTasks();
+    if (tasks.length === 0) {
+      warn("Nothing to send yet");
+      return;
+    }
+    const target = await pickTargetChat();
+    if (target === null) return;
+    sendBatch(tasks, target);
+  };
+  var pollDoneStatus = () => {
+    if (!refs.sidebar || refs.sidebar.classList.contains("hidden")) return;
+    if (!state.tasks.some((t) => t.id && !t.done)) return;
+    try {
+      chrome.runtime.sendMessage(
+        { type: "TSAYRU_SEND", path: "/tasks/done/recent", method: "GET" },
+        (resp) => {
+          void chrome.runtime.lastError;
+          const ids = resp?.ok && Array.isArray(resp.data?.ids) ? resp.data.ids : null;
+          if (!ids || ids.length === 0) return;
+          const doneIds = new Set(ids);
+          let changed2 = false;
+          for (const t of state.tasks) {
+            if (t.id && !t.done && doneIds.has(t.id)) {
+              t.done = true;
+              changed2 = true;
+            }
+          }
+          if (changed2) {
+            persist();
+            renderSidebar();
+          }
+        }
+      );
+    } catch {
+    }
+  };
+  var donePollTimer = null;
+  var ensureDonePolling = () => {
+    if (donePollTimer) return;
+    donePollTimer = setInterval(pollDoneStatus, 1e4);
+  };
+  var onTaskHover = (selector) => {
+    if (state.inspecting) return;
+    if (!selector) return;
+    ensureOverlay();
+    moveHighlight(queryDeep(selector));
+  };
+  var onTaskLeave = () => {
+    if (state.inspecting) return;
+    moveHighlight(null);
+  };
+  var clearTasks = () => {
+    if (state.tasks.length === 0) return;
+    const removed = visibleTasks();
+    if (removed.length === 0) return;
+    const removedSet = new Set(removed);
+    state.tasks = state.tasks.filter((t) => !removedSet.has(t));
+    state.editingTaskIndex = null;
+    persist();
+    renderSidebar();
+    toast(`Cleared ${removed.length} task${plural(removed.length)}`, {
+      iconName: "trash",
+      action: {
+        label: "Undo",
+        run: () => {
+          state.tasks.push(...removed);
+          persist();
+          renderSidebar();
+        }
+      }
+    });
+  };
+  var actButton = (name, label, onClick2) => el("button", { class: "act", title: label, "aria-label": label, onClick: onClick2 }, icon(name));
+  var editDraft = null;
+  var editTask = (idx) => {
+    state.editingTaskIndex = idx;
+    editDraft = null;
+    renderSidebar();
+  };
+  var deleteTask = (idx) => {
+    state.tasks.splice(idx, 1);
+    if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
+    else if (state.editingTaskIndex !== null && state.editingTaskIndex > idx) {
+      state.editingTaskIndex -= 1;
+    }
+    persist();
+    renderSidebar();
+  };
+  var renderEditor = (task, idx) => {
+    const ta = el("textarea", {
+      class: "field",
+      rows: 3,
+      "aria-label": "Task text",
+      placeholder: "What should change here?"
+    });
+    ta.value = editDraft ?? task.text;
+    ta.addEventListener("input", () => {
+      editDraft = ta.value;
+    });
+    setTimeout(() => {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }, 0);
+    const save = () => {
+      const v = ta.value.trim();
+      if (!v) {
+        ta.focus();
+        return;
+      }
+      state.tasks[idx].text = v;
+      state.editingTaskIndex = null;
+      editDraft = null;
+      persist();
+      renderSidebar();
+    };
+    const cancel = () => {
+      state.editingTaskIndex = null;
+      editDraft = null;
+      renderSidebar();
+    };
+    ta.__tsayruKey = (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        save();
+        return true;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+        return true;
+      }
+      return false;
+    };
+    return el(
+      "div",
+      { class: "edit" },
+      ta,
+      el(
+        "div",
+        { class: "edit-ft" },
+        el("button", { class: "btn quiet small", onClick: cancel }, "Cancel", el("span", { class: "kbd-in" }, "Esc")),
+        el("button", { class: "btn ink small", onClick: save }, "Save", el("span", { class: "kbd-in" }, "\u21B5"))
+      )
+    );
+  };
+  var renderTask = (task, idx, displayNum) => {
+    const editing = state.editingTaskIndex === idx;
+    const styleTask = !!task.styleChanges?.length;
+    return el(
+      "div",
+      {
+        class: "task" + (task.done ? " done" : "") + (editing ? " editing" : ""),
+        onMouseEnter: () => onTaskHover(task.selector),
+        onMouseLeave: onTaskLeave
+      },
+      el(
+        "div",
+        { class: "num", title: task.done ? "Done \u2014 Claude marked it" : null },
+        task.done ? icon("check") : String(displayNum)
+      ),
+      el(
+        "div",
+        { class: "body" },
+        el(
+          "div",
+          { class: "row1" },
+          el("span", { class: "label", title: task.label }, task.label),
+          editing ? null : el(
+            "div",
+            { class: "acts" },
+            actButton("copy", "Copy this task", () => copyOne(task, displayNum)),
+            actButton("edit", "Edit", () => editTask(idx)),
+            actButton("close", "Delete", () => deleteTask(idx))
+          )
+        ),
+        el("div", { class: "sel", title: task.selector }, task.selector),
+        editing ? renderEditor(task, idx) : (
+          // Style-editor tasks speak through their change list; no nag for text.
+          task.text || !styleTask ? el("div", { class: "text" + (task.text ? "" : " empty") }, task.text || "No note yet") : null
+        ),
+        styleTask && !editing ? styleSummary(task.styleChanges) : null
+      )
+    );
+  };
+  var styleSummary = (changes) => {
+    const props = [...new Set(changes.map((c) => c.property))];
+    return el(
+      "div",
+      {
+        class: "styled",
+        title: changes.map((c) => `${c.property}: ${c.before ?? "\u2014"} \u2192 ${c.after ?? "removed"}`).join("\n")
+      },
+      el("span", { class: "chip" }, icon("sliders"), `${changes.length} style change${plural(changes.length)}`),
+      el("span", { class: "props" }, props.join(", "))
+    );
+  };
+  var renderFilters = (hosts, hostScoped, allTags) => {
+    const box = refs.sidebar.querySelector(".filters");
+    box.replaceChildren();
+    if (hosts.length > 1) {
+      const seg = el("div", { class: "seg", role: "tablist", "aria-label": "Sites" });
+      const mkTab = (label, value, count) => el(
+        "button",
+        {
+          class: state.filterHost === value ? "on" : "",
+          role: "tab",
+          "aria-selected": String(state.filterHost === value),
+          title: label,
+          onClick: () => {
+            state.filterHost = value;
+            renderSidebar();
+          }
+        },
+        el("span", {}, label),
+        el("span", { class: "n" }, String(count))
+      );
+      seg.appendChild(mkTab("All", null, state.tasks.length));
+      for (const h of hosts) {
+        seg.appendChild(mkTab(h, h, state.tasks.filter((t) => safeHost(t.url) === h).length));
+      }
+      box.appendChild(seg);
+    }
+    if (allTags.length > 0) {
+      const row = el("div", { class: "tags" });
+      for (const tag of allTags) {
+        const n = hostScoped.filter((t) => taskTags(t.text).includes(tag)).length;
+        const active = state.filterTag === tag;
+        row.appendChild(
+          el(
+            "button",
+            {
+              class: "tag" + (active ? " on" : ""),
+              "aria-pressed": String(active),
+              title: active ? "Show all tags" : `Only tasks tagged #${tag}`,
+              onClick: () => {
+                state.filterTag = active ? null : tag;
+                renderSidebar();
+              }
+            },
+            icon("hash"),
+            tag,
+            el("span", { class: "n" }, String(n))
+          )
+        );
+      }
+      box.appendChild(row);
+    }
+    box.hidden = !box.childElementCount;
+  };
+  var STEPS = [
+    ["Pick an element", "Press the blue key and click anything."],
+    ["Say what should change", "Plain words are enough. Enter adds the task."],
+    ["Send to Claude", "Screenshots and source files go along."]
+  ];
+  var renderEmpty = (list) => {
+    if (state.filterHost || state.filterTag) {
+      list.appendChild(
+        el(
+          "div",
+          { class: "nothing" },
+          "No tasks match this filter.",
+          el(
+            "button",
+            {
+              onClick: () => {
+                state.filterHost = null;
+                state.filterTag = null;
+                renderSidebar();
+              }
+            },
+            "Show all tasks"
+          )
+        )
+      );
+      return;
+    }
+    list.appendChild(
+      el(
+        "ol",
+        { class: "steps" },
+        ...STEPS.map(
+          ([title, line], i) => el(
+            "li",
+            {},
+            el("span", { class: "num" }, String(i + 1)),
+            el("div", {}, el("b", {}, title), el("p", {}, line))
+          )
+        )
+      )
+    );
+  };
+  var renderDeck = () => {
+    const picking = state.inspecting;
+    const styling = picking && state.pickMode === "style";
+    const pick = refs.sidebar.querySelector(".pick");
+    pick.classList.toggle("on", picking);
+    pick.setAttribute("aria-pressed", String(picking));
+    pick.querySelector(".disc").replaceChildren(icon(styling ? "sliders" : "target"));
+    pick.querySelector(".pick-title").textContent = !picking ? "Pick an element" : styling ? "Click to restyle" : "Click any element";
+    pick.querySelector(".pick-sub").hidden = !picking;
+    pick.querySelector(".led").hidden = !picking;
+    const restyle = refs.sidebar.querySelector(".deck .square");
+    restyle.classList.toggle("on", styling);
+    restyle.setAttribute("aria-pressed", String(styling));
+  };
+  var renderSidebar = () => {
+    if (!refs.sidebar) return;
+    const list = refs.sidebar.querySelector(".list");
+    list.replaceChildren();
+    const hosts = [
+      ...new Set(state.tasks.map((t) => safeHost(t.url)).filter(Boolean))
+    ];
+    if (state.filterHost && !hosts.includes(state.filterHost)) {
+      state.filterHost = null;
+    }
+    const hostScoped = filterByHost(state.tasks, state.filterHost);
+    const allTags = [...new Set(hostScoped.flatMap((t) => taskTags(t.text)))];
+    if (state.filterTag && !allTags.includes(state.filterTag)) {
+      state.filterTag = null;
+    }
+    renderFilters(hosts, hostScoped, allTags);
+    const filtered = visibleTasks();
+    if (filtered.length === 0) {
+      renderEmpty(list);
+    } else {
+      filtered.forEach((task, fi) => {
+        const idx = state.tasks.indexOf(task);
+        list.appendChild(renderTask(task, idx, fi + 1));
+      });
+    }
+    const n = state.tasks.length;
+    refs.sidebar.querySelector(".tally").textContent = n ? `${n} task${plural(n)}` : "No tasks";
+    for (const b of refs.sidebar.querySelectorAll(".ship button")) {
+      b.disabled = filtered.length === 0;
+    }
+    renderDeck();
+  };
+  var ensureSidebar = () => {
+    if (refs.sidebar) return;
+    const quick = IS_MAC ? "\u2325 click" : "Alt click";
+    const restyleKeys = IS_MAC ? "\u2318 click" : "Ctrl click";
+    refs.sidebar = el(
+      "div",
+      { class: "panel shell", role: "complementary", "aria-label": "tsayru" },
+      grain(),
+      el(
+        "div",
+        { class: "hd" },
+        el("div", { class: "mark" }, brandMark()),
+        el("div", { class: "word" }, "tsayru"),
+        el("div", { class: "tally" }, "No tasks"),
+        el(
+          "button",
+          {
+            class: "round",
+            title: "Hide the panel (turns picking off)",
+            "aria-label": "Hide the panel",
+            onClick: () => hideSidebar()
+          },
+          icon("hide")
+        )
+      ),
+      el(
+        "div",
+        { class: "deck" },
+        el(
+          "button",
+          {
+            class: "pick",
+            title: "Click an element on the page to add a task about it",
+            onClick: () => toggleInspector()
+          },
+          el("span", { class: "disc" }, icon("target")),
+          el(
+            "span",
+            { class: "pick-label" },
+            el("span", { class: "pick-title" }, "Pick an element"),
+            el("span", { class: "pick-sub", hidden: true }, "Esc to stop")
+          ),
+          el("span", { class: "led", hidden: true })
+        ),
+        el(
+          "button",
+          {
+            class: "square",
+            title: `Click an element to restyle it (or ${restyleKeys} it any time)`,
+            onClick: () => toggleStylePick()
+          },
+          icon("sliders"),
+          "Restyle"
+        )
+      ),
+      hints([
+        [quick, "Quick add"],
+        [restyleKeys, "Restyle"]
+      ]),
+      el("div", { class: "groove" }),
+      el("div", { class: "filters", hidden: true }),
+      el("div", { class: "list" }),
+      el("div", { class: "groove" }),
+      el(
+        "div",
+        { class: "ship" },
+        el(
+          "button",
+          {
+            class: "send",
+            title: "Paste the tasks into an open Claude chat and send them",
+            onClick: sendToServer
+          },
+          el("span", { class: "disc" }, icon("send")),
+          el("span", { class: "send-label" }, "Send to Claude")
+        ),
+        el(
+          "button",
+          { class: "square", title: "Copy the tasks as Markdown", onClick: copyAll },
+          icon("copy"),
+          "Copy"
+        ),
+        el(
+          "button",
+          { class: "square", title: "Clear the tasks in view (you can undo)", onClick: clearTasks },
+          icon("trash"),
+          "Clear"
+        )
+      )
+    );
+    uiLayer().appendChild(refs.sidebar);
+    ensureDonePolling();
+    renderSidebar();
+  };
+
+  // src/modal.js
+  var dialog = null;
+  var closeModal = () => {
+    if (dialog) {
+      dialog.close();
+      dialog = null;
+      refs.modal = null;
+    }
+  };
+  var requestClose = () => {
+    const ta = refs.modal?.querySelector(".field");
+    if (ta && ta.value.trim() && !confirm("Discard this task draft?")) return;
+    closeModal();
+  };
+  var addTask = async (selector, label, text, frameworkPromise, ctx) => {
+    const framework = await Promise.race([
+      frameworkPromise || Promise.resolve(null),
+      new Promise((resolve) => setTimeout(() => resolve(null), 250))
+    ]);
+    state.tasks.push({
+      // Stable id — the done-status sync from the server matches on it.
+      id: crypto.randomUUID(),
+      selector,
+      label,
+      text,
+      url: location.href,
+      framework: framework || null,
+      computedStyles: ctx?.computedStyles || null,
+      screenshot: ctx?.screenshot || null,
+      html: ctx?.html || null,
+      env: ctx?.env || null,
+      pageErrors: ctx?.pageErrors?.length ? ctx.pageErrors : null,
+      done: false,
+      addedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    await persist();
+    renderSidebar();
+    bus.emit("task-added");
+  };
+  var quickAddTask = async (target, ctx) => {
+    const selector = buildSelector(target);
+    const label = shortLabel(target);
+    const frameworkPromise = detectFramework(target).catch(() => null);
+    await addTask(selector, label, "", frameworkPromise, ctx);
+  };
+  var submitTask = async (selector, label, frameworkPromise, ctx) => {
+    if (!refs.modal) return;
+    if (refs.modal.__submitting) return;
+    refs.modal.__submitting = true;
+    const ta = refs.modal.querySelector(".field");
+    const text = ta.value.trim();
+    if (!text) {
+      refs.modal.__submitting = false;
+      ta.focus();
+      return;
+    }
+    await addTask(selector, label, text, frameworkPromise, ctx);
+    closeModal();
+  };
+  var openModal = (target, ctx = {}) => {
+    closeModal();
+    const selector = buildSelector(target);
+    const label = shortLabel(target);
+    const frameworkPromise = detectFramework(target).catch(() => null);
+    const submit = () => submitTask(selector, label, frameworkPromise, ctx);
+    dialog = openDialog({ label: "New task", onEscape: requestClose });
+    refs.modal = dialog.scrim;
+    const ta = el("textarea", {
+      class: "field",
+      placeholder: "What should change here?",
+      "aria-label": "What should change here?",
+      rows: 4
+    });
+    ta.__tsayruKey = (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        submit();
+        return true;
+      }
+      return false;
+    };
+    dialog.dialog.append(
+      dialogHeader("New task", requestClose),
+      el(
+        "div",
+        { class: "target" },
+        ctx.screenshot ? el("img", { class: "shot", src: ctx.screenshot, alt: "" }) : null,
+        el(
+          "div",
+          { class: "target-meta" },
+          el("b", { title: label }, label),
+          el("span", { class: "sel" }, selector)
+        )
+      ),
+      ta,
+      el(
+        "div",
+        { class: "dlg-ft" },
+        hints([["Enter", "add"], [IS_MAC ? "\u21E7 Enter" : "Shift Enter", "new line"]]),
+        el("button", { class: "btn quiet", onClick: requestClose }, "Cancel"),
+        el("button", { class: "btn primary", onClick: submit }, "Add task")
+      )
+    );
+    ta.focus();
+  };
+
   // src/stylequick.js
   var WEIGHTS = ["100", "200", "300", "400", "500", "600", "700", "800", "900"];
   var ALIGNS = ["start", "left", "center", "right", "justify", "end"];
   var BORDER_STYLES = ["none", "solid", "dashed", "dotted", "double"];
   var shadowSection = (api, syncers) => {
     let layers = [];
-    let shown = null;
+    let shown2 = null;
     const list = el("div", { class: "layers" });
     const write = () => api.setInline("box-shadow", formatShadows(layers));
-    const lengthBox = (layer, key, label) => {
-      const input = el("input", { class: "in", spellcheck: "false", value: trimPx(layer[key]), title: `${label}, px` });
+    const lengthBox = (layer2, key, label) => {
+      const input = el("input", { class: "in", spellcheck: "false", value: trimPx(layer2[key]), title: `${label}, px` });
       const apply = () => {
-        layer[key] = withUnit(key, input.value) || "0px";
+        layer2[key] = withUnit(key, input.value) || "0px";
         write();
       };
       input.addEventListener("input", apply);
-      bindKeys(input, { prop: key, fallback: () => layer[key], apply });
+      bindKeys(input, { prop: key, fallback: () => layer2[key], apply });
       return el("label", { class: "mini" }, el("span", {}, label), input);
     };
-    const layerRow = (layer, i) => {
+    const layerRow = (layer2, i) => {
       const color = colorControl({
-        read: () => layer.color,
+        read: () => layer2.color,
         write: (value) => {
           if (!CSS.supports("color", value)) return false;
-          layer.color = value;
+          layer2.color = value;
           write();
           return true;
         },
@@ -2299,9 +3388,9 @@
       });
       color.sync();
       const inset = el("input", { type: "checkbox" });
-      inset.checked = layer.inset;
+      inset.checked = layer2.inset;
       inset.addEventListener("change", () => {
-        layer.inset = inset.checked;
+        layer2.inset = inset.checked;
         write();
       });
       const remove = () => {
@@ -2315,10 +3404,10 @@
         el(
           "div",
           { class: "quad" },
-          lengthBox(layer, "x", "X"),
-          lengthBox(layer, "y", "Y"),
-          lengthBox(layer, "blur", "Blur"),
-          lengthBox(layer, "spread", "Spread")
+          lengthBox(layer2, "x", "X"),
+          lengthBox(layer2, "y", "Y"),
+          lengthBox(layer2, "blur", "Blur"),
+          lengthBox(layer2, "spread", "Spread")
         ),
         el(
           "div",
@@ -2330,8 +3419,8 @@
       );
     };
     const render = () => {
-      shown = api.computed().getPropertyValue("box-shadow");
-      layers = parseShadows(shown);
+      shown2 = api.computed().getPropertyValue("box-shadow");
+      layers = parseShadows(shown2);
       list.replaceChildren(...layers.map(layerRow));
     };
     const presets = el(
@@ -2367,7 +3456,7 @@
     syncers.push(() => {
       const active = api.focused();
       if (active && list.contains(active)) return;
-      if (api.computed().getPropertyValue("box-shadow") !== shown) render();
+      if (api.computed().getPropertyValue("box-shadow") !== shown2) render();
     });
     render();
     return section(["Shadow", presets], list, add);
@@ -2596,11 +3685,11 @@
     let cards = /* @__PURE__ */ new Map();
     const declRow = (ad, d, { overridden, off }) => {
       const name = d.name;
-      const shown = `${d.value}${d.important ? " !important" : ""}`;
+      const shown2 = `${d.value}${d.important ? " !important" : ""}`;
       const chk = ad.canToggle ? el("input", { type: "checkbox", class: "chk", title: off ? "Turn back on" : "Turn off" }) : el("span");
       if (ad.canToggle) chk.checked = !off;
       const nameIn = el("input", { class: "in dn", spellcheck: "false", value: name, list: "tsayru-props", title: name });
-      const valueIn = el("input", { class: "in dv", spellcheck: "false", value: shown, title: shown });
+      const valueIn = el("input", { class: "in dv", spellcheck: "false", value: shown2, title: shown2 });
       const swSlot = el("span", { class: "sw-slot" });
       const vwrap = el("div", { class: "vwrap" }, swSlot, valueIn);
       const del = el("button", { class: "x", title: "Delete" }, "\xD7");
@@ -2891,7 +3980,7 @@
   var mountPanel = (api) => {
     const target = api.target;
     let tab = null;
-    let current = null;
+    let current2 = null;
     const sub = el("div", { class: "hd-sub" });
     const updateSub = () => {
       const fw = api.framework();
@@ -2904,7 +3993,11 @@
       sub.textContent = parts.join(" \xB7 ");
       sub.title = [api.label, ...parts].join("\n");
     };
-    const close = el("button", { class: "ic", title: "Close and save as a task (Esc)", onClick: () => api.close() }, "\xD7");
+    const close = el(
+      "button",
+      { class: "ic", title: "Close and save as a task (Esc)", "aria-label": "Close", onClick: () => api.close() },
+      icon("close")
+    );
     const header = el(
       "div",
       { class: "hd" },
@@ -2983,6 +4076,7 @@
       count.classList.toggle("has", n > 0);
       revert2.disabled = n === 0;
       done.textContent = n ? "Save task" : "Close";
+      done.classList.toggle("primary", n > 0);
     };
     const show = (name, force2 = false) => {
       if (name === tab && !force2) return;
@@ -2991,14 +4085,15 @@
       tabs.css.classList.toggle("on", name === "css");
       if (name === "quick") api.force(null);
       const scroll = body.scrollTop;
-      current = name === "quick" ? quickTab(api) : rulesTab(api);
-      body.replaceChildren(current.node);
+      current2 = name === "quick" ? quickTab(api) : rulesTab(api);
+      body.replaceChildren(current2.node);
       if (force2) body.scrollTop = scroll;
       updateCount();
     };
     const panel = el(
       "div",
-      { class: "panel" },
+      { class: "panel shell" },
+      grain(),
       header,
       crumbs,
       notice,
@@ -3010,7 +4105,7 @@
     api.onChange = () => {
       updateCount();
       updateSub();
-      current?.refresh?.();
+      current2?.refresh?.();
     };
     api.onFramework = updateSub;
     api.onDetached = () => {
@@ -3022,162 +4117,195 @@
   };
 
   // src/stylepanel-css.js
-  var PANEL_CSS = `
-:host { all: initial; }
-* { box-sizing: border-box; }
-[hidden] { display: none !important; }
-
+  var PANEL_CSS = THEME_CSS + `
 .panel {
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   position: absolute;
   pointer-events: auto;
   width: 340px;
   max-height: calc(100vh - 24px);
   display: flex;
   flex-direction: column;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  color: var(--ink);
+  border-radius: 24px;
+  font: 12px/1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
   overflow: hidden;
   text-align: left;
+  animation: rise 200ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
 }
-button { font: inherit; color: inherit; }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
 
 /* header */
-.hd { display: flex; align-items: center; gap: 4px; padding: 9px 6px 4px 12px; cursor: grab; user-select: none; }
+.hd { display: flex; align-items: center; gap: 6px; padding: 12px 8px 4px 16px; cursor: grab; user-select: none; }
 .hd:active { cursor: grabbing; }
 .hd-main { flex: 1; min-width: 0; }
-.hd-title { font: 600 12px/1.35 var(--mono); color: #c7d2fe; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hd-sub { font-size: 11px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ic { appearance: none; border: 0; background: transparent; color: #94a3b8; width: 26px; height: 26px; border-radius: 6px; cursor: pointer; font-size: 16px; line-height: 26px; padding: 0; flex: none; }
-.ic:hover { background: rgba(255, 255, 255, 0.07); color: #e2e8f0; }
-.ic.small { width: 20px; height: 20px; line-height: 20px; font-size: 13px; }
-.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px 3px; padding: 0 12px 7px; font: 10.5px/1.4 var(--mono); color: #475569; }
-.crumb { appearance: none; border: 0; background: none; padding: 0; color: #64748b; cursor: pointer; font: inherit; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.crumb:hover { color: #fbbf24; }
-.crumb.cur { color: #c7d2fe; cursor: default; }
-.warn { margin: 0 12px 8px; padding: 6px 8px; border-radius: 6px; background: rgba(251, 191, 36, 0.12); color: #fbbf24; font-size: 11px; }
+.hd-title { font: 600 13px/1.35 var(--mono); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hd-sub { font-size: 11.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ic {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 32px;
+  padding: 0;
+  flex: none;
+}
+.ic { display: grid; place-items: center; }
+.ic svg.i { width: 18px; height: 18px; }
+.ic:hover { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
+.ic.small { width: 24px; height: 24px; line-height: 24px; font-size: 14px; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px 4px; padding: 0 16px 8px; font: 10.5px/1.4 var(--mono); color: var(--text-3); }
+.crumb { appearance: none; border: 0; background: none; padding: 0; color: var(--text-3); cursor: pointer; font: inherit; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb:hover { color: var(--signal-text); }
+.crumb.cur { color: var(--ink); font-weight: 600; cursor: default; }
+.warn { margin: 0 12px 8px; padding: 8px 10px; border-radius: 12px; background: var(--caution-soft); color: var(--caution-text); font-size: 11.5px; font-weight: 550; }
 
-/* tabs */
-.tabs { display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
-.tab { appearance: none; border: 0; background: none; color: #94a3b8; font-weight: 600; padding: 7px 8px 8px; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
-.tab:hover { color: #e2e8f0; }
-.tab.on { color: #e2e8f0; border-bottom-color: #6366f1; }
-.count { margin-left: auto; padding-right: 4px; font-size: 11px; color: #64748b; }
-.count.has { color: #a5b4fc; }
+/* tabs: a segmented control, like the sidebar's host filter */
+.tabs { display: flex; align-items: center; gap: 2px; margin: 0 12px 8px; padding: 3px; border-radius: 13px; background: var(--well); box-shadow: var(--shadow-press); }
+.tab { appearance: none; border: 0; background: none; color: var(--text-2); font-weight: 650; font-size: 12.5px; height: 28px; padding: 0 12px; border-radius: 10px; cursor: pointer; }
+.tab:hover { color: var(--ink); }
+.tab.on { background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); }
+.count { margin-left: auto; padding-right: 8px; font-size: 11.5px; font-weight: 600; color: var(--text-3); }
+.count.has { color: var(--signal-text); }
 
-.body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 12px 10px; }
+.body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0 12px 10px; }
 .body::-webkit-scrollbar { width: 8px; }
-.body::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; border: 2px solid #0f172a; }
+.body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; border: 2px solid var(--shell); }
 
 /* footer */
-.ft { display: flex; gap: 6px; align-items: center; padding: 8px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
-.ft .note { flex: 1; min-width: 0; font-family: inherit; }
-.btn { appearance: none; border: 0; border-radius: 6px; padding: 6px 10px; font-weight: 600; cursor: pointer; background: #1e293b; color: #e2e8f0; white-space: nowrap; }
-.btn:hover:not(:disabled) { background: #273449; }
+.ft { display: flex; gap: 6px; align-items: center; padding: 10px; border-top: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--groove); }
+.ft .note { flex: 1; min-width: 0; height: 36px; font: 13px var(--font); padding: 0 12px; border-radius: 12px; }
+.btn { appearance: none; border: 0; height: 36px; border-radius: 12px; padding: 0 12px; font-weight: 650; font-size: 12.5px; cursor: pointer; background: var(--key); color: var(--ink); box-shadow: var(--shadow-key); white-space: nowrap; transition: transform 90ms ease; }
+.btn:hover:not(:disabled) { background: var(--key-hover); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.4; cursor: default; }
-.btn.primary { background: #6366f1; color: #fff; }
-.btn.primary:hover { background: #4f46e5; }
+.btn.primary {
+  background: var(--signal);
+  color: var(--on-signal);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25), inset 0 -2px 0 rgb(0 0 0 / 0.16), 0 8px 16px -10px var(--signal-glow);
+}
+.btn.primary:hover { background: var(--signal); filter: brightness(1.08); }
+.btn.primary:focus-visible { outline-color: var(--ink); }
 
 /* inputs */
-.in { width: 100%; min-width: 0; height: 24px; background: #1e293b; color: #e2e8f0; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 5px; padding: 0 6px; font: 11.5px/22px var(--mono); outline: none; }
-.in::placeholder { color: #475569; }
-.in:focus { border-color: #6366f1; background: #111a30; }
-.in.changed { color: #a5b4fc; }
-.in.bad, .in.bad:focus { border-color: #f87171; }
-select.in { padding: 0 2px; cursor: pointer; }
+.in { width: 100%; min-width: 0; height: 26px; background: var(--well); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 0 7px; font: 11.5px/24px var(--mono); outline: none; box-shadow: var(--shadow-press); }
+.in::placeholder { color: var(--text-3); }
+.in:focus { border-color: var(--signal); background: var(--key); }
+.in.changed { color: var(--signal-text); font-weight: 600; }
+.in.bad, .in.bad:focus { border-color: var(--marker); }
+select.in { padding: 0 3px; cursor: pointer; }
 
 /* quick tab */
-.sec { padding: 9px 0 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.sec { padding: 10px 0 9px; border-bottom: 1px solid var(--line); }
 .sec:last-child { border-bottom: 0; }
-.sec-hd { display: flex; align-items: center; justify-content: space-between; min-height: 18px; margin-bottom: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: #64748b; }
-.row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 6px; margin: 4px 0; }
-.lbl { color: #94a3b8; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; }
-.lbl.changed { color: #a5b4fc; cursor: pointer; }
+.sec-hd { display: flex; align-items: center; justify-content: space-between; min-height: 20px; margin-bottom: 6px; font-size: 12.5px; font-weight: 700; letter-spacing: -0.005em; color: var(--ink); }
+.row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 6px; margin: 5px 0; }
+.lbl { color: var(--text-2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; }
+.lbl.changed { color: var(--signal-text); font-weight: 600; cursor: pointer; }
 .lbl.changed::after { content: " \u21BA"; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.color { display: grid; grid-template-columns: 24px minmax(0, 1fr) 52px; gap: 6px; align-items: center; }
+.color { display: grid; grid-template-columns: 26px minmax(0, 1fr) 54px; gap: 6px; align-items: center; }
 .alpha { position: relative; display: block; }
-.alpha::after { content: "%"; position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: #64748b; pointer-events: none; font-size: 11px; }
-.alpha .in { padding-right: 16px; }
-.sw { position: relative; display: block; width: 24px; height: 24px; border-radius: 5px; overflow: hidden; background: repeating-conic-gradient(#94a3b8 0 25%, #e2e8f0 0 50%) 0 0 / 8px 8px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18); cursor: pointer; }
-.sw.small { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.alpha::after { content: "%"; position: absolute; right: 7px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; font-size: 11px; }
+.alpha .in { padding-right: 18px; }
+.sw { position: relative; display: block; width: 26px; height: 26px; border-radius: 8px; overflow: hidden; background: repeating-conic-gradient(#b8b8b4 0 25%, #f5f4f2 0 50%) 0 0 / 8px 8px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.14); cursor: pointer; }
+.sw.small { width: 15px; height: 15px; border-radius: 4px; flex: none; }
 .sw-fill { position: absolute; inset: 0; }
 .sw input { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); opacity: 0; cursor: pointer; border: 0; padding: 0; }
 .presets { display: flex; gap: 3px; }
-.pill { appearance: none; border: 1px solid rgba(255, 255, 255, 0.12); background: transparent; color: #94a3b8; border-radius: 999px; padding: 1px 7px; font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: none; cursor: pointer; }
-.pill:hover { color: #e2e8f0; border-color: rgba(255, 255, 255, 0.3); }
-.layer { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 7px; padding: 6px; margin: 5px 0; }
+.pill { appearance: none; border: 0; background: var(--key); box-shadow: var(--shadow-key); color: var(--text-2); border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 650; letter-spacing: 0; text-transform: none; cursor: pointer; }
+.pill:hover { color: var(--ink); }
+.layer { background: var(--key); box-shadow: var(--shadow-key); border-radius: 12px; padding: 7px; margin: 6px 0; }
 .quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .mini { display: flex; flex-direction: column; gap: 2px; }
-.mini span { font-size: 10px; color: #64748b; }
+.mini span { font-size: 10.5px; color: var(--text-3); }
 .layer-ft { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; margin-top: 6px; }
-.check { display: inline-flex; align-items: center; gap: 4px; color: #94a3b8; font-size: 11px; cursor: pointer; user-select: none; }
-.check input, .chk { margin: 0; accent-color: #6366f1; cursor: pointer; }
-.link { appearance: none; border: 0; background: none; color: #a5b4fc; font-weight: 600; font-size: 11.5px; padding: 4px 0; cursor: pointer; }
-.link:hover { color: #c7d2fe; text-decoration: underline; }
+.check { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-size: 11.5px; cursor: pointer; user-select: none; }
+.check input, .chk { margin: 0; accent-color: var(--signal); cursor: pointer; }
+.link { appearance: none; border: 0; background: none; color: var(--signal-text); font-weight: 650; font-size: 12px; padding: 4px 0; cursor: pointer; }
+.link:hover { text-decoration: underline; }
 
-/* box model */
-.box { position: relative; display: grid; grid-template-columns: 46px minmax(0, 1fr) 46px; grid-template-rows: auto auto auto; gap: 4px; align-items: center; justify-items: center; padding: 18px 5px 5px; border: 1px dashed rgba(251, 191, 36, 0.45); border-radius: 7px; background: rgba(251, 191, 36, 0.05); }
-.box.pad { width: 100%; border-color: rgba(52, 211, 153, 0.5); background: rgba(52, 211, 153, 0.06); }
-.box-tag { position: absolute; top: 3px; left: 7px; font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; color: #64748b; }
+/* box model: DevTools' margin / padding / content colours */
+.box { position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; grid-template-rows: auto auto auto; gap: 4px; align-items: center; justify-items: center; padding: 18px 5px 5px; border: 1px dashed rgb(217 119 6 / 0.55); border-radius: 12px; background: rgb(217 119 6 / 0.07); }
+.box.pad { width: 100%; border-color: rgb(22 163 74 / 0.55); background: rgb(22 163 74 / 0.07); }
+.box-tag { position: absolute; top: 3px; left: 8px; font-size: 10px; font-weight: 600; color: var(--text-3); }
 .box > .t { grid-area: 1 / 2; }
 .box > .l { grid-area: 2 / 1; }
 .box > .c { grid-area: 2 / 2; }
 .box > .r { grid-area: 2 / 3; }
 .box > .b { grid-area: 3 / 2; }
-.box-in { width: 46px; text-align: center; padding: 0 2px; }
-.content { display: flex; align-items: center; justify-content: center; gap: 3px; width: 100%; padding: 6px 4px; border: 1px solid rgba(96, 165, 250, 0.45); border-radius: 4px; background: rgba(96, 165, 250, 0.08); color: #64748b; }
+.box-in { width: 48px; text-align: center; padding: 0 2px; }
+.content { display: flex; align-items: center; justify-content: center; gap: 3px; width: 100%; padding: 6px 4px; border: 1px solid color-mix(in oklab, var(--signal) 45%, transparent); border-radius: 8px; background: var(--signal-soft); color: var(--text-3); }
 .box-in.wide { width: 64px; }
 
 /* css tab */
-.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 9px 0 8px; }
-.chip { appearance: none; border: 1px solid rgba(255, 255, 255, 0.12); background: transparent; color: #cbd5e1; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 600; cursor: pointer; }
-.chip:hover { border-color: rgba(255, 255, 255, 0.3); }
-.chip.empty { color: #64748b; }
-.chip.on { background: #6366f1; border-color: #6366f1; color: #fff; }
-.chip .n { margin-left: 4px; font-weight: 500; opacity: 0.65; }
+.chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 2px 0 8px; }
+.chip { appearance: none; border: 0; background: var(--key); box-shadow: var(--shadow-key); color: var(--ink); border-radius: 999px; height: 26px; padding: 0 10px; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.chip:hover { background: var(--key-hover); }
+.chip.empty { color: var(--text-3); box-shadow: none; background: transparent; }
+.chip.on { background: var(--signal); color: var(--on-signal); box-shadow: none; }
+.chip .n { margin-left: 4px; font-weight: 500; opacity: 0.7; }
 .refresh { margin-left: auto; }
-.status { margin: -2px 0 8px; font-size: 11px; color: #fbbf24; }
-.card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 7px; margin-bottom: 8px; overflow: hidden; }
-.card.created { border-color: rgba(99, 102, 241, 0.55); }
+.status { margin: -2px 0 8px; font-size: 11.5px; color: var(--caution-text); }
+.card { background: var(--key); box-shadow: var(--shadow-key); border-radius: 14px; margin-bottom: 8px; overflow: hidden; }
+.card.created { box-shadow: var(--shadow-key), inset 0 0 0 1.5px var(--signal); }
 .card.inactive { opacity: 0.55; }
-.card-hd { padding: 6px 8px 5px; background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
-.sel { font: 600 11.5px/1.35 var(--mono); color: #c7d2fe; word-break: break-word; }
-.card.inline .sel { color: #94a3b8; }
-.more { font-weight: 400; color: #64748b; }
-.meta { margin-top: 2px; font-size: 10.5px; color: #64748b; word-break: break-word; }
-.meta b { font-weight: 600; color: #fbbf24; }
-.decls { padding: 3px 4px 4px; }
+.card-hd { padding: 8px 10px 6px; border-bottom: 1px solid var(--line); }
+.sel { font: 600 11.5px/1.35 var(--mono); color: var(--ink); word-break: break-word; }
+.card.inline .sel { color: var(--text-2); }
+.more { font-weight: 400; color: var(--text-3); }
+.meta { margin-top: 2px; font-size: 11px; color: var(--text-3); word-break: break-word; }
+.meta b { font-weight: 650; color: var(--caution-text); }
+.decls { padding: 4px 6px 5px; }
 .decl { position: relative; display: grid; grid-template-columns: 14px auto minmax(0, 1fr) 18px; gap: 3px; align-items: center; margin: 1px 0; }
 .decl .dn { width: 112px; }
 @supports (field-sizing: content) {
   .decl .dn { width: auto; field-sizing: content; min-width: 44px; max-width: 176px; }
 }
-.decl .in { height: 21px; line-height: 19px; padding: 0 4px; background: transparent; border-color: transparent; }
-.decl .in:hover { border-color: rgba(255, 255, 255, 0.1); }
-.decl .in:focus { background: #111a30; border-color: #6366f1; }
-.decl .dn { color: #7dd3fc; }
-.decl.changed::before { content: ""; position: absolute; left: -4px; top: 4px; bottom: 4px; width: 2px; border-radius: 2px; background: #6366f1; }
-.decl.over .in { text-decoration: line-through; color: #64748b; }
-.decl.off .in { text-decoration: line-through; color: #475569; }
-.decl.add .dn { color: #94a3b8; }
+.decl .in { height: 22px; line-height: 20px; padding: 0 4px; background: transparent; border-color: transparent; box-shadow: none; }
+.decl .in:hover { border-color: var(--line); }
+.decl .in:focus { background: var(--well); border-color: var(--signal); }
+.decl .dn { color: var(--code-prop); }
+.decl.changed::before { content: ""; position: absolute; left: -5px; top: 4px; bottom: 4px; width: 2px; border-radius: 2px; background: var(--signal); }
+.decl.over .in { text-decoration: line-through; color: var(--text-3); }
+.decl.off .in { text-decoration: line-through; color: var(--text-3); opacity: 0.8; }
+.decl.add .dn { color: var(--text-2); }
 .vwrap { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .sw-slot:empty { display: none; }
-.x { appearance: none; border: 0; background: none; color: #64748b; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; visibility: hidden; }
+.x { appearance: none; border: 0; background: none; color: var(--text-3); cursor: pointer; font-size: 15px; line-height: 1; padding: 0; visibility: hidden; }
 .decl:hover .x { visibility: visible; }
-.x:hover { color: #f87171; }
-.muted { font-size: 11px; color: #64748b; margin: 4px 0 8px; }
+.x:hover { color: var(--marker-text); }
+.muted { font-size: 11.5px; color: var(--text-3); margin: 4px 0 8px; }
 
 /* the target's outline (a sibling of the panel, outside it) */
-.outline { position: absolute; left: 0; top: 0; display: none; border: 1.5px dashed #818cf8; border-radius: 2px; pointer-events: none; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.3); }
-.outline.preview { border-style: solid; border-color: #fbbf24; }
-.outline-tag { position: absolute; left: -1.5px; bottom: 100%; margin-bottom: 3px; padding: 3px 5px; border-radius: 3px; background: #6366f1; color: #fff; font: 600 10.5px/1 ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; }
-.outline.below .outline-tag { bottom: auto; top: 100%; margin: 3px 0 0; }
-.outline.preview .outline-tag { background: #b45309; }
+.outline { position: absolute; left: 0; top: 0; display: none; border: 2px dashed var(--signal); border-radius: 4px; pointer-events: none; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.4); }
+.outline.preview { border-style: solid; border-color: var(--led); }
+.outline-tag {
+  position: absolute;
+  left: -2px;
+  bottom: calc(100% + 5px);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--signal);
+  color: var(--on-signal);
+  font: 650 12px/1 var(--font);
+  white-space: nowrap;
+  box-shadow: 0 6px 14px -6px var(--signal-glow);
+}
+.outline-tag span { opacity: 0.72; font-weight: 550; font-variant-numeric: tabular-nums; }
+.outline.below .outline-tag { bottom: auto; top: calc(100% + 5px); }
+.outline.preview .outline-tag { background: var(--led); color: #000; box-shadow: none; }
 `;
 
   // src/styleeditor.js
@@ -3592,7 +4720,7 @@ ${note}` : note;
     renderSidebar();
     const n = plan.merged.length;
     const what = `${n} change${n === 1 ? "" : "s"}`;
-    flash(plan.existing ? `style task updated \xB7 ${what}` : `style task saved \xB7 ${what}`);
+    flash(plan.existing ? `Style task updated: ${what}` : `Style task saved: ${what}`, { iconName: "sliders" });
   };
   var onPageHide = () => {
     const s = session;
@@ -3601,41 +4729,11 @@ ${note}` : note;
     applySave(s, plan, { framework: s.framework });
     persist();
   };
-  var SHADOW_STOP = [
-    "click",
-    "dblclick",
-    "auxclick",
-    "mousedown",
-    "mouseup",
-    "pointerdown",
-    "pointerup",
-    "contextmenu",
-    "wheel",
-    "touchstart",
-    "touchmove",
-    "touchend",
-    "input",
-    "beforeinput",
-    "paste",
-    "copy",
-    "cut"
-  ];
-  var stopHere = (e) => e.stopPropagation();
-  var onWindowKey = (e) => {
-    if (!host || e.target !== host.node) return;
-    e.stopImmediatePropagation();
-    if (e.type !== "keydown") return;
-    const active = host.root.activeElement;
-    if (active?.__tsayruKey?.(e)) return;
-    if (e.key === "Escape") {
+  var onPanelKey = (e) => {
+    if (e.type === "keydown" && e.key === "Escape") {
       e.preventDefault();
       closeStyleEditor();
     }
-  };
-  var onWindowFocus = (e) => {
-    if (!host) return;
-    const intoPanel = e.type === "focusin" ? e.target === host.node : e.relatedTarget === host.node;
-    if (intoPanel) e.stopImmediatePropagation();
   };
   var tagOf = (node) => {
     const id = node.id ? `#${node.id}` : "";
@@ -3662,58 +4760,38 @@ ${note}` : note;
     box.style.width = `${r.width}px`;
     box.style.height = `${r.height}px`;
     box.classList.toggle("preview", !!host.preview);
-    box.classList.toggle("below", r.top < 22);
-    box.firstChild.textContent = `${tagOf(node)} \xB7 ${Math.round(r.width)}\xD7${Math.round(r.height)}`;
+    box.classList.toggle("below", r.top < 34);
+    const [name, size] = box.firstChild.children;
+    name.textContent = tagOf(node);
+    size.textContent = `${Math.round(r.width)} \xD7 ${Math.round(r.height)}`;
   };
   var ensureHost = () => {
     if (host) return host;
-    const node = document.createElement("tsayru-style");
-    node.className = "tsayru-style-host";
-    node.style.cssText = [
-      "all: initial !important",
-      "position: fixed !important",
-      "inset: 0 !important",
-      "z-index: 2147483647 !important",
-      "pointer-events: none !important",
-      "display: block !important"
-    ].join(";");
-    const root = node.attachShadow({ mode: "closed" });
-    try {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(PANEL_CSS);
-      root.adoptedStyleSheets = [sheet];
-    } catch {
-      root.appendChild(el("style", {}, PANEL_CSS));
-    }
-    const outline = el("div", { class: "outline" }, el("div", { class: "outline-tag" }));
-    root.appendChild(outline);
-    for (const type of SHADOW_STOP) root.addEventListener(type, stopHere);
-    for (const type of ["keydown", "keyup", "keypress"]) {
-      window.addEventListener(type, onWindowKey, true);
-    }
-    window.addEventListener("focusin", onWindowFocus, true);
-    window.addEventListener("focusout", onWindowFocus, true);
+    const shell = createShadowHost({
+      tag: "tsayru-style",
+      className: "tsayru-style-host",
+      css: PANEL_CSS,
+      onKey: onPanelKey
+    });
+    const outline = el("div", { class: "outline" }, el("div", { class: "outline-tag" }, el("b"), el("span")));
+    shell.root.appendChild(outline);
     window.addEventListener("pagehide", onPageHide);
-    document.documentElement.appendChild(node);
-    refs.styleHost = node;
-    host = { node, root, outline, panel: null, preview: null, raf: 0, last: "" };
+    ensureFonts();
+    refs.styleHost = shell.node;
+    host = { shell, node: shell.node, root: shell.root, outline, panel: null, preview: null, raf: 0, last: "" };
     host.raf = requestAnimationFrame(track);
     return host;
   };
   var destroyHost = () => {
     if (!host) return;
     cancelAnimationFrame(host.raf);
-    for (const type of ["keydown", "keyup", "keypress"]) {
-      window.removeEventListener(type, onWindowKey, true);
-    }
-    window.removeEventListener("focusin", onWindowFocus, true);
-    window.removeEventListener("focusout", onWindowFocus, true);
     window.removeEventListener("pagehide", onPageHide);
-    host.node.remove();
+    host.shell.destroy();
     refs.styleHost = null;
     host = null;
   };
   var PANEL_W = 340;
+  var SIDEBAR_W = 368;
   var MARGIN = 12;
   var clampPos = ({ left, top }) => ({
     left: Math.max(MARGIN - PANEL_W + 80, Math.min(left, innerWidth - 80)),
@@ -3723,8 +4801,7 @@ ${note}` : note;
     let pos = lastPos;
     if (!pos) {
       const r = target.getBoundingClientRect();
-      const sidebarOpen = refs.sidebar && !refs.sidebar.classList.contains("tsayru-hidden");
-      const rightSide = innerWidth - PANEL_W - MARGIN - (sidebarOpen ? 320 + MARGIN : 0);
+      const rightSide = innerWidth - PANEL_W - MARGIN - (sidebarVisible() ? SIDEBAR_W + MARGIN : 0);
       const elementOnLeft = r.left + r.width / 2 < innerWidth / 2;
       pos = { left: elementOnLeft ? Math.max(MARGIN, rightSide) : MARGIN, top: MARGIN };
     }
@@ -3806,7 +4883,7 @@ ${note}` : note;
         await saveSession(s);
       } catch (err) {
         console.warn("[tsayru] saving style task failed:", err);
-        flash("couldn't save the style task");
+        flash("Couldn't save the style task", { warn: true });
       }
     }
     force(s, null);
@@ -3817,7 +4894,7 @@ ${note}` : note;
     }
     if (session === s) session = null;
   };
-  var open = async (target, deep) => {
+  var open2 = async (target, deep) => {
     if (!(target instanceof Element) || !target.isConnected) return;
     if (session?.target === target) return;
     if (session) await finish(session, { save: true });
@@ -3835,7 +4912,7 @@ ${note}` : note;
   };
   var isStyleEditorOpen = () => !!session;
   var openStyleEditor = (target, { deep } = {}) => {
-    queue = queue.then(() => open(target, deep)).catch((err) => console.warn("[tsayru] style editor:", err));
+    queue = queue.then(() => open2(target, deep)).catch((err) => console.warn("[tsayru] style editor:", err));
     return queue;
   };
   var closeStyleEditor = ({ save = true } = {}) => {
@@ -3849,25 +4926,37 @@ ${note}` : note;
   // src/inspector.js
   var ensureOverlay = () => {
     if (refs.highlight) return;
-    refs.highlight = el("div", { class: "tsayru-highlight" });
-    document.documentElement.appendChild(refs.highlight);
+    refs.highlight = el(
+      "div",
+      { class: "hl" },
+      el("div", { class: "hl-tag" }, el("b"), el("span"))
+    );
+    uiLayer().appendChild(refs.highlight);
   };
-  var sidebarVisible = () => !!refs.sidebar && !refs.sidebar.classList.contains("tsayru-hidden");
+  var shown = null;
   var moveHighlight = (target) => {
     if (!refs.highlight) return;
     if (target && !sidebarVisible()) target = null;
+    shown = target || null;
+    const hl = refs.highlight;
     if (!target) {
-      refs.highlight.style.display = "none";
+      hl.style.display = "none";
       return;
     }
     const r = target.getBoundingClientRect();
-    refs.highlight.style.display = "block";
-    refs.highlight.style.transform = `translate(${r.left + window.scrollX}px, ${r.top + window.scrollY}px)`;
-    refs.highlight.style.width = `${r.width}px`;
-    refs.highlight.style.height = `${r.height}px`;
+    hl.style.display = "block";
+    hl.style.transform = `translate(${r.left - 3}px, ${r.top - 3}px)`;
+    hl.style.width = `${r.width + 6}px`;
+    hl.style.height = `${r.height + 6}px`;
+    hl.classList.toggle("below", r.top < 40 && r.bottom < innerHeight - 40);
+    hl.classList.toggle("inside", r.top < 40 && r.bottom >= innerHeight - 40);
+    const [name, size] = hl.firstChild.children;
+    name.textContent = describeNode(target, 2);
+    size.textContent = `${Math.round(r.width)} \xD7 ${Math.round(r.height)}`;
   };
-  var setInspecting = (on) => {
+  var setInspecting = (on, mode = "task") => {
     state.inspecting = on;
+    state.pickMode = on ? mode : "task";
     document.documentElement.classList.toggle("tsayru-inspecting", on);
     if (!on) {
       state.hovered = null;
@@ -3879,18 +4968,19 @@ ${note}` : note;
   var showSidebar = () => {
     ensureOverlay();
     ensureSidebar();
-    refs.sidebar.classList.remove("tsayru-hidden");
+    refs.sidebar.classList.remove("hidden");
   };
   var hideSidebar = () => {
-    if (refs.sidebar) refs.sidebar.classList.add("tsayru-hidden");
+    if (refs.sidebar) refs.sidebar.classList.add("hidden");
     if (state.inspecting) setInspecting(false);
+    moveHighlight(null);
     state.editingTaskIndex = null;
     closeStyleEditor();
   };
   var toggleSidebar = () => {
     ensureOverlay();
     ensureSidebar();
-    if (refs.sidebar.classList.contains("tsayru-hidden")) {
+    if (refs.sidebar.classList.contains("hidden")) {
       showSidebar();
     } else {
       hideSidebar();
@@ -3898,14 +4988,13 @@ ${note}` : note;
   };
   var toggleInspector = () => {
     showSidebar();
-    setInspecting(!state.inspecting);
+    setInspecting(!(state.inspecting && state.pickMode === "task"), "task");
   };
-  var isOurChrome = (node) => !!(node && node.closest && node.closest(
-    ".tsayru-sidebar, .tsayru-modal-backdrop, .tsayru-highlight, .tsayru-style-host"
-  ));
-  var IS_MAC = /mac|iphone|ipad/i.test(
-    navigator.userAgentData?.platform || navigator.platform || ""
-  );
+  var toggleStylePick = () => {
+    showSidebar();
+    setInspecting(!(state.inspecting && state.pickMode === "style"), "style");
+  };
+  var isOurChrome = (node) => isOurHost(node);
   var styleKey = (e) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.shiftKey;
   var styleGesture = (e) => styleKey(e) && sidebarVisible();
   var CONTROL = "a[href], button, [role='button'], [role='link'], [role='tab'], [role='menuitem'], [role='option'], label, summary";
@@ -3927,7 +5016,8 @@ ${note}` : note;
   var hoverAt = (x, y) => {
     ensureOverlay();
     const deep = deepElementFromPoint(x, y);
-    const target = deep && !state.inspecting ? pickStyleTarget(deep) : deep;
+    const styling = !state.inspecting || state.pickMode === "style";
+    const target = deep && styling ? pickStyleTarget(deep) : deep;
     if (!target || target === state.hovered) return;
     if (isOurChrome(target)) {
       state.hovered = null;
@@ -3980,6 +5070,11 @@ ${note}` : note;
     const target = deepElementFromPoint(e.clientX, e.clientY);
     if (!target) return;
     if (isOurChrome(target)) return;
+    if (state.pickMode === "style") {
+      setInspecting(false);
+      openStyleEditor(pickStyleTarget(target), { deep: target });
+      return;
+    }
     const ctx = {
       computedStyles: snapshotComputedStyles(target),
       html: snapshotHtml(target),
@@ -4030,19 +5125,15 @@ ${note}` : note;
     document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("blur", clearGestureHover);
+    bus.on("ui-key", (e) => e.type === "keyup" ? onKeyUp(e) : e.type === "keydown" && onKeyDown(e));
     bus.on("task-added", () => {
       if (sidebarVisible()) setInspecting(true);
     });
-    window.addEventListener(
-      "scroll",
-      () => {
-        if (state.inspecting && state.hovered) moveHighlight(state.hovered);
-      },
-      true
-    );
-    window.addEventListener("resize", () => {
-      if (state.inspecting && state.hovered) moveHighlight(state.hovered);
-    });
+    const follow = () => {
+      if (shown) moveHighlight(shown.isConnected ? shown : null);
+    };
+    window.addEventListener("scroll", follow, true);
+    window.addEventListener("resize", follow);
   };
 
   // src/index.js

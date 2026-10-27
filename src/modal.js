@@ -1,23 +1,27 @@
-// Task input modal — shown after a click in inspector mode.
+// Task dialog — shown after a click in inspector mode.
 // Fires framework detection in parallel; styles snapshot is captured upstream and passed in.
 
-import { el, state, refs, persist, bus } from "./core.js";
+import { el, state, refs, persist, bus, IS_MAC } from "./core.js";
 import { buildSelector, shortLabel } from "./selector.js";
 import { detectFramework } from "./framework.js";
 import { renderSidebar } from "./sidebar.js";
+import { openDialog, dialogHeader, hints } from "./ui.js";
+
+let dialog = null;
 
 export const closeModal = () => {
-  if (refs.modal) {
-    refs.modal.remove();
+  if (dialog) {
+    dialog.close();
+    dialog = null;
     refs.modal = null;
   }
 };
 
-// Cancel path (Esc / backdrop / × / Cancel): confirm before discarding a
+// Cancel path (Esc / scrim / × / Cancel): confirm before discarding a
 // non-empty draft — losing typed text to a stray click is worse than one
 // extra confirm.
 const requestClose = () => {
-  const ta = refs.modal?.querySelector(".tsayru-modal-input");
+  const ta = refs.modal?.querySelector(".field");
   if (ta && ta.value.trim() && !confirm("Discard this task draft?")) return;
   closeModal();
 };
@@ -51,8 +55,8 @@ const addTask = async (selector, label, text, frameworkPromise, ctx) => {
   bus.emit("task-added");
 };
 
-// Alt+click path: skip the modal entirely, save the task with empty text.
-// The user fills descriptions later via inline edit (✎); the formatter
+// Alt+click path: skip the dialog entirely, save the task with empty text.
+// The user fills descriptions later via inline edit; the formatter
 // substitutes a sensible instruction if they never do.
 export const quickAddTask = async (target, ctx) => {
   const selector = buildSelector(target);
@@ -67,7 +71,7 @@ const submitTask = async (selector, label, frameworkPromise, ctx) => {
   // because the previous invocation hadn't finished its `await` yet.
   if (refs.modal.__submitting) return;
   refs.modal.__submitting = true;
-  const ta = refs.modal.querySelector(".tsayru-modal-input");
+  const ta = refs.modal.querySelector(".field");
   const text = ta.value.trim();
   if (!text) {
     refs.modal.__submitting = false;
@@ -83,74 +87,48 @@ export const openModal = (target, ctx = {}) => {
   const selector = buildSelector(target);
   const label = shortLabel(target);
   const frameworkPromise = detectFramework(target).catch(() => null);
-  const screenshot = ctx.screenshot || null;
+  const submit = () => submitTask(selector, label, frameworkPromise, ctx);
 
-  refs.modal = el(
-    "div",
-    {
-      class: "tsayru-modal-backdrop",
-      onClick: (e) => {
-        if (e.target === refs.modal) requestClose();
-      },
-    },
+  dialog = openDialog({ label: "New task", onEscape: requestClose });
+  refs.modal = dialog.scrim;
+
+  const ta = el("textarea", {
+    class: "field",
+    placeholder: "What should change here?",
+    "aria-label": "What should change here?",
+    rows: 4,
+  });
+  // Keys reach fields in the shadow root only through __tsayruKey.
+  ta.__tsayruKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      submit();
+      return true;
+    }
+    return false; // Escape falls through to the dialog (requestClose)
+  };
+
+  dialog.dialog.append(
+    dialogHeader("New task", requestClose),
     el(
       "div",
-      { class: "tsayru-modal" },
+      { class: "target" },
+      ctx.screenshot ? el("img", { class: "shot", src: ctx.screenshot, alt: "" }) : null,
       el(
         "div",
-        { class: "tsayru-modal-head" },
-        el("div", { class: "tsayru-modal-title" }, "Task for this element"),
-        el(
-          "button",
-          { class: "tsayru-modal-close", onClick: requestClose },
-          "×",
-        ),
-      ),
-      el(
-        "div",
-        { class: "tsayru-modal-meta" },
-        el("div", { class: "tsayru-modal-label" }, label),
-        el("div", { class: "tsayru-modal-sel" }, selector),
-        screenshot
-          ? el("img", { class: "tsayru-modal-thumb", src: screenshot, alt: "" })
-          : null,
-      ),
-      el("textarea", {
-        class: "tsayru-modal-input",
-        placeholder:
-          "What should change here? (Enter to add, Shift+Enter for newline)",
-        rows: 4,
-      }),
-      el(
-        "div",
-        { class: "tsayru-modal-footer" },
-        el(
-          "button",
-          { class: "tsayru-modal-cancel", onClick: requestClose },
-          "Cancel",
-        ),
-        el(
-          "button",
-          {
-            class: "tsayru-modal-submit",
-            onClick: () => submitTask(selector, label, frameworkPromise, ctx),
-          },
-          "Add (Enter)",
-        ),
+        { class: "target-meta" },
+        el("b", { title: label }, label),
+        el("span", { class: "sel" }, selector),
       ),
     ),
+    ta,
+    el(
+      "div",
+      { class: "dlg-ft" },
+      hints([["Enter", "add"], [IS_MAC ? "⇧ Enter" : "Shift Enter", "new line"]]),
+      el("button", { class: "btn quiet", onClick: requestClose }, "Cancel"),
+      el("button", { class: "btn primary", onClick: submit }, "Add task"),
+    ),
   );
-
-  document.documentElement.appendChild(refs.modal);
-  const ta = refs.modal.querySelector(".tsayru-modal-input");
   ta.focus();
-  ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitTask(selector, label, frameworkPromise, ctx);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      requestClose();
-    }
-  });
 };

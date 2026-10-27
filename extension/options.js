@@ -22,15 +22,15 @@ const save = async () => {
       const u = new URL(serverUrl);
       if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
     } catch {
-      status.textContent = "invalid URL";
-      status.style.color = "#c0392b";
+      status.textContent = "That URL doesn't look right";
+      status.className = "bad";
       return;
     }
   }
 
   await chrome.storage.local.set({ [KEY]: { serverUrl, token } });
-  status.textContent = "saved ✓";
-  status.style.color = "#2e7d4f";
+  status.textContent = "Saved";
+  status.className = "";
   setTimeout(() => (status.textContent = ""), 1500);
 };
 

@@ -3,13 +3,15 @@
 //
 // We deliberately do NOT show local Claude Code (VS Code / terminal) chats:
 // those don't have a public push API, so the resulting "click → Cmd+V"
-// flow is no better than just hitting "Copy all" from the sidebar.
+// flow is no better than just hitting "Copy" in the sidebar.
 //
 // Returns Promise<null | OnlineTab>:
 //   null      — cancelled
 //   OnlineTab — { kind: "online", tabId, url, title, lastAccessed }
 
-import { el } from "./core.js";
+import { el, IS_MAC } from "./core.js";
+import { openDialog, dialogHeader } from "./ui.js";
+import { icon } from "./icons.js";
 
 // Re-used to detect the "old content script in a reloaded extension" footgun.
 const isContextInvalidated = (err) =>
@@ -36,22 +38,11 @@ const fetchOnlineTabs = () =>
     }
   });
 
-const openClaudeAi = () => {
+// Opened through the background: the host page's CSP can't get in the way.
+const openTab = (url) => {
   try {
-    chrome.runtime.sendMessage({
-      type: "TSAYRU_OPEN_TAB",
-      url: "https://claude.ai/new",
-    });
+    chrome.runtime.sendMessage({ type: "TSAYRU_OPEN_TAB", url });
   } catch {}
-};
-
-let pickerEl = null;
-
-const closePicker = () => {
-  if (pickerEl) {
-    pickerEl.remove();
-    pickerEl = null;
-  }
 };
 
 const renderItem = (entry, onPick) => {
@@ -62,135 +53,85 @@ const renderItem = (entry, onPick) => {
   } catch {}
   return el(
     "button",
-    {
-      class: "tsayru-picker-item tsayru-picker-item--online",
-      title: entry.url,
-      onClick: () => onPick(entry),
-    },
+    { class: "chat", title: entry.url, onClick: () => onPick(entry) },
+    el("span", { class: "disc" }, icon("chat")),
     el(
-      "div",
-      { class: "tsayru-picker-item-head" },
-      el("span", { class: "tsayru-picker-item-kind" }, "🌐"),
-      el(
-        "span",
-        { class: "tsayru-picker-item-label" },
-        entry.title || "Untitled",
-      ),
-      entry.active
-        ? el("span", { class: "tsayru-picker-item-meta" }, "active")
-        : null,
+      "span",
+      { class: "chat-text" },
+      el("span", { class: "chat-title" }, entry.title || "Untitled chat"),
+      el("span", { class: "sel" }, urlLabel),
     ),
-    el("div", { class: "tsayru-picker-item-path" }, urlLabel),
+    entry.active ? el("span", { class: "now" }, "Open now") : el("span"),
   );
 };
 
+const warning = (...children) =>
+  el("div", { class: "status warn" }, icon("alert"), el("div", {}, ...children));
+
+let open = null;
+
 export const pickTargetChat = () =>
   new Promise((resolve) => {
-    closePicker();
+    open?.finish(null);
 
     let resolved = false;
     const finish = (value) => {
       if (resolved) return;
       resolved = true;
-      closePicker();
-      window.removeEventListener("keydown", onKey, true);
+      dialog.close();
+      if (open?.finish === finish) open = null;
       resolve(value);
     };
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(null);
-      }
-    };
 
-    const list = el("div", { class: "tsayru-picker-list" });
-    const status = el(
+    const dialog = openDialog({
+      className: "picker",
+      label: "Send to which chat?",
+      onEscape: () => finish(null),
+    });
+    open = { finish };
+
+    const status = el("div", { class: "status" }, "Looking for open Claude chats…");
+    const list = el("div", { class: "chats" });
+    const footer = el(
       "div",
-      { class: "tsayru-picker-status" },
-      "Looking for open Claude web chats…",
+      { class: "dlg-ft" },
+      el("span", { class: "hints" }),
+      el("button", { class: "btn quiet", onClick: () => finish(null) }, "Cancel"),
     );
-
-    pickerEl = el(
-      "div",
-      {
-        class: "tsayru-modal-backdrop",
-        onClick: (e) => {
-          if (e.target === pickerEl) finish(null);
-        },
-      },
-      el(
-        "div",
-        { class: "tsayru-modal tsayru-picker-modal" },
-        el(
-          "div",
-          { class: "tsayru-modal-head" },
-          el(
-            "div",
-            { class: "tsayru-modal-title" },
-            "Send to which web chat?",
-          ),
-          el(
-            "button",
-            { class: "tsayru-modal-close", onClick: () => finish(null) },
-            "×",
-          ),
-        ),
-        status,
-        list,
-        el(
-          "div",
-          { class: "tsayru-picker-footer" },
-          el(
-            "button",
-            {
-              class: "tsayru-modal-cancel",
-              onClick: () => finish(null),
-            },
-            "Cancel",
-          ),
-        ),
-      ),
-    );
-
-    document.documentElement.appendChild(pickerEl);
-    window.addEventListener("keydown", onKey, true);
+    dialog.dialog.append(dialogHeader("Send to which chat?", () => finish(null)), status, list, footer);
 
     fetchOnlineTabs().then((res) => {
       if (resolved) return;
-      list.innerHTML = "";
+      list.replaceChildren();
       if (!res.ok) {
-        if (isContextInvalidated(res.error)) {
-          status.innerHTML =
-            "Extension was reloaded — refresh the page " +
-            "(<kbd>Cmd+R</kbd> / <kbd>F5</kbd>).";
-          status.classList.add("tsayru-picker-status--warn");
-        } else {
-          status.textContent = `Error: ${res.error}`;
-        }
+        status.replaceWith(
+          isContextInvalidated(res.error)
+            ? warning(`tsayru was updated. Reload this page (${IS_MAC ? "⌘R" : "F5"}) and send again.`)
+            : warning(`Couldn't list the open tabs: ${res.error}`),
+        );
         return;
       }
       const tabs = res.tabs;
       if (tabs.length === 0) {
-        status.innerHTML =
-          "No open claude.ai or claude.com tabs. Open " +
-          "<a class=\"tsayru-picker-link\" href=\"https://claude.ai/new\" target=\"_blank\">claude.ai/new</a> " +
-          "or <a class=\"tsayru-picker-link\" href=\"https://claude.com\" target=\"_blank\">claude.com</a> in a new tab and reopen the picker.";
-        // Wire the link opens via background to avoid CSP issues on the host page.
-        for (const a of status.querySelectorAll("a")) {
-          a.addEventListener("click", (e) => {
-            e.preventDefault();
-            try {
-              chrome.runtime.sendMessage({
-                type: "TSAYRU_OPEN_TAB",
-                url: a.href,
-              });
-            } catch {}
-            finish(null);
-          });
-        }
+        status.textContent = "No Claude chat is open. Open one, then press Send again.";
+        const go = (url) => () => {
+          openTab(url);
+          finish(null);
+        };
+        list.replaceWith(
+          el(
+            "div",
+            { class: "opens" },
+            el("button", { class: "btn primary", onClick: go("https://claude.ai/new") }, icon("external"), "Open claude.ai"),
+            el("button", { class: "btn quiet", onClick: go("https://claude.com") }, "claude.com"),
+          ),
+        );
         return;
       }
-      status.textContent = `Found ${tabs.length} web chat${tabs.length === 1 ? "" : "s"}:`;
+      status.textContent =
+        tabs.length === 1
+          ? "One Claude chat is open. The tasks are pasted in and sent right away."
+          : "Pick a chat. The tasks are pasted in and sent right away.";
       // Most recently used first — the tab the user wants is almost always
       // the one they just looked at.
       tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
@@ -205,5 +146,6 @@ export const pickTargetChat = () =>
         };
         list.appendChild(renderItem(entry, finish));
       }
+      list.querySelector(".chat")?.focus();
     });
   });

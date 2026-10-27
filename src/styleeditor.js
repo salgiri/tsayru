@@ -10,7 +10,7 @@
 // forced states, saving, and the panel's isolated host. The panel's UI lives
 // in stylepanel.js / stylequick.js / stylerules.js.
 
-import { el, state, refs, persist } from "./core.js";
+import { el, state, refs, persist, sidebarVisible } from "./core.js";
 import { buildSelector, shortLabel } from "./selector.js";
 import {
   detectFramework,
@@ -31,6 +31,8 @@ import {
 import { mergeChanges } from "./stylechanges.js";
 import { mountPanel } from "./stylepanel.js";
 import { PANEL_CSS } from "./stylepanel-css.js";
+import { createShadowHost } from "./shadowhost.js";
+import { ensureFonts } from "./fonts.js";
 
 // Properties an element inherits — their value may come from an ancestor's rule.
 const INHERITED = new Set([
@@ -508,7 +510,7 @@ const saveSession = async (s) => {
   renderSidebar();
   const n = plan.merged.length;
   const what = `${n} change${n === 1 ? "" : "s"}`;
-  flash(plan.existing ? `style task updated · ${what}` : `style task saved · ${what}`);
+  flash(plan.existing ? `Style task updated: ${what}` : `Style task saved: ${what}`, { iconName: "sliders" });
 };
 
 // Reloading with the panel open must not lose the edits: record them
@@ -523,53 +525,13 @@ const onPageHide = () => {
 
 // ---------- Panel host ----------
 
-// Events from inside the panel stop at its shadow root: the page never sees
-// them (outside-click handlers would close the very dialog being styled,
-// scroll locks would swallow the panel's wheel).
-const SHADOW_STOP = [
-  "click",
-  "dblclick",
-  "auxclick",
-  "mousedown",
-  "mouseup",
-  "pointerdown",
-  "pointerup",
-  "contextmenu",
-  "wheel",
-  "touchstart",
-  "touchmove",
-  "touchend",
-  "input",
-  "beforeinput",
-  "paste",
-  "copy",
-  "cut",
-];
-const stopHere = (e) => e.stopPropagation();
-
-// Keys typed in the panel are handled here, at the very top of the capture
-// phase, and go no further: page shortcuts and dialog Escape handlers (often
-// capture listeners on document) never see them. Default actions (typing,
-// Tab) still happen.
-const onWindowKey = (e) => {
-  if (!host || e.target !== host.node) return;
-  e.stopImmediatePropagation();
-  if (e.type !== "keydown") return;
-  const active = host.root.activeElement;
-  if (active?.__tsayruKey?.(e)) return;
-  if (e.key === "Escape") {
+// Keys typed in the panel that no field took (shadowhost.js stops every key
+// before the page sees it): Escape closes the editor.
+const onPanelKey = (e) => {
+  if (e.type === "keydown" && e.key === "Escape") {
     e.preventDefault();
     closeStyleEditor();
   }
-};
-
-// Focus moving into the panel must not look like focus leaving a modal:
-// focus traps (Radix FocusScope and the like) would pull it straight back.
-// Only that direction is hidden; focus going back to the page is the page's.
-const onWindowFocus = (e) => {
-  if (!host) return;
-  const intoPanel = e.type === "focusin" ? e.target === host.node : e.relatedTarget === host.node;
-  if (intoPanel) e.stopImmediatePropagation();
 };
 
 const tagOf = (node) => {
@@ -604,44 +566,26 @@ const track = () => {
   box.style.width = `${r.width}px`;
   box.style.height = `${r.height}px`;
   box.classList.toggle("preview", !!host.preview);
-  box.classList.toggle("below", r.top < 22);
-  box.firstChild.textContent = `${tagOf(node)} · ${Math.round(r.width)}×${Math.round(r.height)}`;
+  box.classList.toggle("below", r.top < 34);
+  const [name, size] = box.firstChild.children;
+  name.textContent = tagOf(node);
+  size.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
 };
 
 const ensureHost = () => {
   if (host) return host;
-  // A custom element in a closed shadow root: page CSS can't reach in, page
-  // scripts and the inspector's deep hit-testing can't look in.
-  const node = document.createElement("tsayru-style");
-  node.className = "tsayru-style-host";
-  node.style.cssText = [
-    "all: initial !important",
-    "position: fixed !important",
-    "inset: 0 !important",
-    "z-index: 2147483647 !important",
-    "pointer-events: none !important",
-    "display: block !important",
-  ].join(";");
-  const root = node.attachShadow({ mode: "closed" });
-  try {
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(PANEL_CSS);
-    root.adoptedStyleSheets = [sheet];
-  } catch {
-    root.appendChild(el("style", {}, PANEL_CSS));
-  }
-  const outline = el("div", { class: "outline" }, el("div", { class: "outline-tag" }));
-  root.appendChild(outline);
-  for (const type of SHADOW_STOP) root.addEventListener(type, stopHere);
-  for (const type of ["keydown", "keyup", "keypress"]) {
-    window.addEventListener(type, onWindowKey, true);
-  }
-  window.addEventListener("focusin", onWindowFocus, true);
-  window.addEventListener("focusout", onWindowFocus, true);
+  const shell = createShadowHost({
+    tag: "tsayru-style",
+    className: "tsayru-style-host",
+    css: PANEL_CSS,
+    onKey: onPanelKey,
+  });
+  const outline = el("div", { class: "outline" }, el("div", { class: "outline-tag" }, el("b"), el("span")));
+  shell.root.appendChild(outline);
   window.addEventListener("pagehide", onPageHide);
-  document.documentElement.appendChild(node);
-  refs.styleHost = node;
-  host = { node, root, outline, panel: null, preview: null, raf: 0, last: "" };
+  ensureFonts();
+  refs.styleHost = shell.node;
+  host = { shell, node: shell.node, root: shell.root, outline, panel: null, preview: null, raf: 0, last: "" };
   host.raf = requestAnimationFrame(track);
   return host;
 };
@@ -649,18 +593,14 @@ const ensureHost = () => {
 const destroyHost = () => {
   if (!host) return;
   cancelAnimationFrame(host.raf);
-  for (const type of ["keydown", "keyup", "keypress"]) {
-    window.removeEventListener(type, onWindowKey, true);
-  }
-  window.removeEventListener("focusin", onWindowFocus, true);
-  window.removeEventListener("focusout", onWindowFocus, true);
   window.removeEventListener("pagehide", onPageHide);
-  host.node.remove();
+  host.shell.destroy();
   refs.styleHost = null;
   host = null;
 };
 
 const PANEL_W = 340;
+const SIDEBAR_W = 368;
 const MARGIN = 12;
 
 const clampPos = ({ left, top }) => ({
@@ -674,8 +614,7 @@ const placePanel = (panel, target) => {
   let pos = lastPos;
   if (!pos) {
     const r = target.getBoundingClientRect();
-    const sidebarOpen = refs.sidebar && !refs.sidebar.classList.contains("tsayru-hidden");
-    const rightSide = innerWidth - PANEL_W - MARGIN - (sidebarOpen ? 320 + MARGIN : 0);
+    const rightSide = innerWidth - PANEL_W - MARGIN - (sidebarVisible() ? SIDEBAR_W + MARGIN : 0);
     const elementOnLeft = r.left + r.width / 2 < innerWidth / 2;
     pos = { left: elementOnLeft ? Math.max(MARGIN, rightSide) : MARGIN, top: MARGIN };
   }
@@ -762,7 +701,7 @@ const finish = async (s, { save }) => {
       await saveSession(s);
     } catch (err) {
       console.warn("[tsayru] saving style task failed:", err);
-      flash("couldn't save the style task");
+      flash("Couldn't save the style task", { warn: true });
     }
   }
   force(s, null);

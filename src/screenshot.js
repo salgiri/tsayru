@@ -37,12 +37,12 @@ const requestFullCapture = () =>
 const captureErrorMessage = (raw) => {
   const s = String(raw || "");
   if (/activeTab|permission|not in effect|cannot access/i.test(s)) {
-    return "no screenshot access — click the tsayru toolbar icon once";
+    return "No screenshot access. Click the tsayru toolbar icon once";
   }
   if (/MAX_CAPTURE_VISIBLE_TAB|per second/i.test(s)) {
-    return "screenshot rate limit — try again in a second";
+    return "Too many screenshots at once. Try again in a second";
   }
-  return "screenshot failed";
+  return "Screenshot failed";
 };
 
 // Surface capture failures to the UI without importing the toast helper
@@ -111,12 +111,12 @@ const cropToDataUrl = (img, rect) => {
   return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
 };
 
-// Briefly hide our own chrome (sidebar, highlight, style editor) so the
-// capture is clean. `visibility: hidden` is instant — no transition, restored
-// synchronously. Important priority: the style editor's host pins its own
-// styles with !important against page CSS.
+// Briefly hide our own chrome (the UI host with sidebar and highlight, the
+// style editor) so the capture is clean. `visibility: hidden` is instant —
+// no transition, restored synchronously. Important priority: both hosts pin
+// their own styles with !important against page CSS.
 const withHiddenUI = async (fn) => {
-  const nodes = [refs.sidebar, refs.highlight, refs.styleHost].filter(Boolean);
+  const nodes = [refs.ui, refs.styleHost].filter(Boolean);
   const prev = nodes.map((n) => [
     n.style.getPropertyValue("visibility"),
     n.style.getPropertyPriority("visibility"),

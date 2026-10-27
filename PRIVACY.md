@@ -22,7 +22,7 @@ click in inspector mode).
 ## Where data can go — only on your explicit action
 
 1. **Clipboard** — when you press "Copy".
-2. **Your own Claude chat** — when you press "To Claude", the batch is inserted
+2. **Your own Claude chat** — when you press "Send to Claude", the batch is inserted
    into a claude.ai / claude.com tab that you select. It is then governed by
    [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
 3. **Your local companion server** (optional) — batches are archived to

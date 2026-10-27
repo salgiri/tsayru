@@ -28,7 +28,7 @@ Everything paste-ready for the dashboard. Upload artifact: `npm run package`
   > tsayru lets developers annotate UI elements on pages they are working on and send those annotations (selector, component, styles, screenshot, task text) to Claude AI as a task brief.
 - **Permission justifications:**
   - `activeTab` — Captures a screenshot of the visible tab when the user clicks an element in inspector mode. Granted only by explicit user gesture (toolbar click / hotkey).
-  - `scripting` — (1) Injects the framework-detection probe into the page's MAIN world when the user enables the inspector, to read React/Vue/Svelte dev metadata; (2) inserts the user's task text into the chat composer of claude.ai/claude.com when the user explicitly chooses "To Claude".
+  - `scripting` — (1) Injects the framework-detection probe into the page's MAIN world when the user enables the inspector, to read React/Vue/Svelte dev metadata; (2) inserts the user's task text into the chat composer of claude.ai/claude.com when the user explicitly presses "Send to Claude".
   - `storage` / `unlimitedStorage` — Persists the user's task list locally (chrome.storage.local). Screenshots are stored as data URLs, hence the lifted quota. Also stores optional inbox-server settings.
   - `clipboardWrite` — The "Copy" buttons place generated markdown on the clipboard.
   - Host `http://127.0.0.1/*`, `http://localhost/*` — Talks to the optional local companion server that archives task batches for the Claude Code (MCP) integration. Loopback only.

@@ -32,6 +32,17 @@ const getServerSettings = async () => {
   }
 };
 
+const FONT_FILES = new Set(["onest-latin.woff2", "onest-cyrillic.woff2"]);
+
+const toBase64 = (buf) => {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+};
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Capture the visible viewport on behalf of the content script.
   // activeTab permission covers this for the tab the user is interacting with.
@@ -137,6 +148,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, tabs: out });
       },
     );
+    return true; // async
+  }
+
+  // The UI font's bytes for the content script (fonts.js). Shadow roots can't
+  // use @font-face, and serving the files as web_accessible_resources would
+  // let any page probe for the extension — so they travel as base64.
+  if (msg?.type === "TSAYRU_FONT") {
+    if (!FONT_FILES.has(msg.file)) {
+      sendResponse({ ok: false, error: "unknown font" });
+      return true;
+    }
+    fetch(chrome.runtime.getURL(`fonts/${msg.file}`))
+      .then((r) => r.arrayBuffer())
+      .then((buf) => sendResponse({ ok: true, data: toBase64(buf) }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true; // async
   }
 

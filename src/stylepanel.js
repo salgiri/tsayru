@@ -5,6 +5,7 @@
 import { h, describeNode } from "./stylewidgets.js";
 import { quickTab } from "./stylequick.js";
 import { rulesTab } from "./stylerules.js";
+import { icon, grain } from "./icons.js";
 
 // The tab carries over to the next element, like the CSS tab's state.
 let lastTab = "quick";
@@ -71,7 +72,11 @@ export const mountPanel = (api) => {
     sub.title = [api.label, ...parts].join("\n");
   };
 
-  const close = h("button", { class: "ic", title: "Close and save as a task (Esc)", onClick: () => api.close() }, "×");
+  const close = h(
+    "button",
+    { class: "ic", title: "Close and save as a task (Esc)", "aria-label": "Close", onClick: () => api.close() },
+    icon("close"),
+  );
   const header = h(
     "div",
     { class: "hd" },
@@ -156,6 +161,7 @@ export const mountPanel = (api) => {
     count.classList.toggle("has", n > 0);
     revert.disabled = n === 0;
     done.textContent = n ? "Save task" : "Close";
+    done.classList.toggle("primary", n > 0); // blue only when there's something to save
   };
 
   const show = (name, force = false) => {
@@ -173,7 +179,8 @@ export const mountPanel = (api) => {
 
   const panel = h(
     "div",
-    { class: "panel" },
+    { class: "panel shell" },
+    grain(),
     header,
     crumbs,
     notice,

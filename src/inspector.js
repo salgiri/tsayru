@@ -1,7 +1,7 @@
 // Inspector mode: highlight overlay, mouse/click/keyboard handlers.
 // Sidebar visibility (show/hide/toggle) — kept here because hiding the panel must turn off inspector.
 
-import { el, state, refs, bus } from "./core.js";
+import { el, state, refs, bus, sidebarVisible, IS_MAC } from "./core.js";
 import {
   snapshotComputedStyles,
   snapshotHtml,
@@ -11,6 +11,9 @@ import {
 } from "./framework.js";
 import { recentContentErrors } from "./errors.js";
 import { deepElementFromPoint } from "./selector.js";
+import { isOurHost } from "./shadowhost.js";
+import { uiLayer } from "./ui.js";
+import { describeNode } from "./stylewidgets.js";
 import { captureElement } from "./screenshot.js";
 import { ensureSidebar, renderSidebar } from "./sidebar.js";
 import { openModal, quickAddTask } from "./modal.js";
@@ -21,38 +24,54 @@ import {
 } from "./styleeditor.js";
 
 // ---------- Highlight overlay ----------
+// What a click would pick: an outline plus a tag naming the element, inside
+// the UI shadow root (viewport coordinates — the host is position: fixed).
 
 export const ensureOverlay = () => {
   if (refs.highlight) return;
-  refs.highlight = el("div", { class: "tsayru-highlight" });
-  document.documentElement.appendChild(refs.highlight);
+  refs.highlight = el(
+    "div",
+    { class: "hl" },
+    el("div", { class: "hl-tag" }, el("b"), el("span")),
+  );
+  uiLayer().appendChild(refs.highlight);
 };
 
 // HARD INVARIANT: the highlight may only ever be visible while the sidebar is
 // open. With the sidebar hidden there is no legitimate caller (inspector and
 // hover-preview both live in the sidebar), so any attempt to show it then is
 // a bug — coerce it to hide instead of trusting call sites.
-const sidebarVisible = () =>
-  !!refs.sidebar && !refs.sidebar.classList.contains("tsayru-hidden");
+let shown = null; // the element the highlight sits on
 
 export const moveHighlight = (target) => {
   if (!refs.highlight) return;
   if (target && !sidebarVisible()) target = null;
+  shown = target || null;
+  const hl = refs.highlight;
   if (!target) {
-    refs.highlight.style.display = "none";
+    hl.style.display = "none";
     return;
   }
   const r = target.getBoundingClientRect();
-  refs.highlight.style.display = "block";
-  refs.highlight.style.transform = `translate(${r.left + window.scrollX}px, ${r.top + window.scrollY}px)`;
-  refs.highlight.style.width = `${r.width}px`;
-  refs.highlight.style.height = `${r.height}px`;
+  hl.style.display = "block";
+  hl.style.transform = `translate(${r.left - 3}px, ${r.top - 3}px)`;
+  hl.style.width = `${r.width + 6}px`;
+  hl.style.height = `${r.height + 6}px`;
+  // The tag sits above; below when there's no room; inside for huge elements.
+  hl.classList.toggle("below", r.top < 40 && r.bottom < innerHeight - 40);
+  hl.classList.toggle("inside", r.top < 40 && r.bottom >= innerHeight - 40);
+  const [name, size] = hl.firstChild.children;
+  name.textContent = describeNode(target, 2);
+  size.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
 };
 
 // ---------- Inspector state ----------
 
-export const setInspecting = (on) => {
+// `mode`: "task" — a click opens the task dialog; "style" — a click opens the
+// style editor (the sidebar's Restyle key, same as ⌘/Ctrl+click).
+export const setInspecting = (on, mode = "task") => {
   state.inspecting = on;
+  state.pickMode = on ? mode : "task";
   document.documentElement.classList.toggle("tsayru-inspecting", on);
   if (!on) {
     // Clear the hover target too — a stale `state.hovered` was the source of
@@ -73,12 +92,14 @@ export const setInspecting = (on) => {
 export const showSidebar = () => {
   ensureOverlay();
   ensureSidebar();
-  refs.sidebar.classList.remove("tsayru-hidden");
+  refs.sidebar.classList.remove("hidden");
 };
 
 export const hideSidebar = () => {
-  if (refs.sidebar) refs.sidebar.classList.add("tsayru-hidden");
+  if (refs.sidebar) refs.sidebar.classList.add("hidden");
   if (state.inspecting) setInspecting(false);
+  moveHighlight(null); // a hover preview lives outside the panel
+
   state.editingTaskIndex = null;
   closeStyleEditor();
 };
@@ -86,36 +107,33 @@ export const hideSidebar = () => {
 export const toggleSidebar = () => {
   ensureOverlay();
   ensureSidebar();
-  if (refs.sidebar.classList.contains("tsayru-hidden")) {
+  if (refs.sidebar.classList.contains("hidden")) {
     showSidebar();
   } else {
     hideSidebar();
   }
 };
 
-// Inspector toggle — used ONLY by the in-sidebar button. Source of truth for inspector state.
+// The sidebar's keys — the only switches for inspector state. Each one stops
+// its own mode and switches over from the other.
 export const toggleInspector = () => {
   showSidebar();
-  setInspecting(!state.inspecting);
+  setInspecting(!(state.inspecting && state.pickMode === "task"), "task");
+};
+
+export const toggleStylePick = () => {
+  showSidebar();
+  setInspecting(!(state.inspecting && state.pickMode === "style"), "style");
 };
 
 // ---------- Event handlers ----------
 
-const isOurChrome = (node) =>
-  !!(
-    node &&
-    node.closest &&
-    node.closest(
-      ".tsayru-sidebar, .tsayru-modal-backdrop, .tsayru-highlight, .tsayru-style-host",
-    )
-  );
+// Our own UI: events from inside a closed shadow root arrive retargeted to its host.
+const isOurChrome = (node) => isOurHost(node);
 
 // ⌘+click on macOS, Ctrl+click elsewhere opens the style editor — only while
 // the sidebar is visible, so the gesture is never taken from a page the user
 // isn't working on (hide the sidebar and ⌘+click opens links again).
-const IS_MAC = /mac|iphone|ipad/i.test(
-  navigator.userAgentData?.platform || navigator.platform || "",
-);
 const styleKey = (e) =>
   (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) &&
   !e.altKey &&
@@ -149,7 +167,8 @@ const hoverAt = (x, y) => {
   // The sidebar auto-opens on dev hosts without the overlay; make sure it exists.
   ensureOverlay();
   const deep = deepElementFromPoint(x, y);
-  const target = deep && !state.inspecting ? pickStyleTarget(deep) : deep;
+  const styling = !state.inspecting || state.pickMode === "style";
+  const target = deep && styling ? pickStyleTarget(deep) : deep;
   if (!target || target === state.hovered) return;
   if (isOurChrome(target)) {
     state.hovered = null;
@@ -210,6 +229,12 @@ const onClick = async (e) => {
   const target = deepElementFromPoint(e.clientX, e.clientY);
   if (!target) return;
   if (isOurChrome(target)) return;
+  if (state.pickMode === "style") {
+    // One-shot: the Restyle key picks a single element.
+    setInspecting(false);
+    openStyleEditor(pickStyleTarget(target), { deep: target });
+    return;
+  }
   // Capture textual context BEFORE any DOM mutation (modal/highlight removal).
   const ctx = {
     computedStyles: snapshotComputedStyles(target),
@@ -277,6 +302,9 @@ export const initEventListeners = () => {
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("keyup", onKeyUp, true);
   window.addEventListener("blur", clearGestureHover);
+  // Keys typed while focus is in our UI never reach the document listeners
+  // above (shadowhost.js stops them); ui.js hands over the ones it didn't use.
+  bus.on("ui-key", (e) => (e.type === "keyup" ? onKeyUp(e) : e.type === "keydown" && onKeyDown(e)));
   // Modal emits this after a task is added — re-arm the inspector so a batch
   // session is click → type → Enter → click, without re-enabling by hand.
   // Internal bus, NOT a window event: the host page must not be able to
@@ -284,17 +312,11 @@ export const initEventListeners = () => {
   bus.on("task-added", () => {
     if (sidebarVisible()) setInspecting(true);
   });
-  // Keep the highlight glued to its element while actively inspecting.
-  // Guarded on `state.inspecting` — these used to fire on a stale hover
-  // target and resurrect the highlight while the extension was collapsed.
-  window.addEventListener(
-    "scroll",
-    () => {
-      if (state.inspecting && state.hovered) moveHighlight(state.hovered);
-    },
-    true,
-  );
-  window.addEventListener("resize", () => {
-    if (state.inspecting && state.hovered) moveHighlight(state.hovered);
-  });
+  // Keep the highlight glued to its element. Safe to re-show: moveHighlight
+  // refuses whenever the sidebar is hidden (the old ghost-highlight bug).
+  const follow = () => {
+    if (shown) moveHighlight(shown.isConnected ? shown : null);
+  };
+  window.addEventListener("scroll", follow, true);
+  window.addEventListener("resize", follow);
 };

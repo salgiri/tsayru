@@ -36,6 +36,7 @@ When you're working with Claude on a frontend project, half the conversation is 
 | **Cross-machine sync** | Point `TSAYRU_INBOX` at a synced folder (iCloud/Dropbox/network mount) on both machines — batches submitted on one appear in the other's MCP. |
 | **Inline editing** | Edit any task's text without losing the captured selector / screenshot. |
 | **Hover preview** | Hovering a task in the sidebar re-highlights the original element on the page. |
+| **Light & dark** | The UI follows your system theme: speckled "chalk" by day, "graphite" by night. It lives in closed shadow roots, so no site's CSS can bend it, and it brings its own typeface (Onest). |
 
 ---
 
@@ -63,25 +64,25 @@ Then load it in Chrome (or any Chromium-based browser — Arc, Brave, Edge):
 
 **1. Open the sidebar.** Click the toolbar icon, press the hotkey, or — on `localhost` / `127.0.0.1` / `*.test` / `*.local` hosts — it appears automatically.
 
-**2. Click "Enable inspector".** The cursor turns into a crosshair; hovering elements highlights them.
+**2. Press the blue "Pick an element" key.** The cursor turns into a crosshair; the element under it is outlined and named (`a#cta.site-btn 140 × 39`). Its yellow light stays on while you're picking.
 
 **3. Click an element.** A small dialog opens. Type what should change (e.g., "make this button forest-green, not gray"), press **Enter**.
 
-**4. Repeat** for as many elements as you want — after each added task the inspector re-arms automatically, so a batch session is just click → type → Enter → click. The sidebar fills up with tasks. (Esc turns the crosshair off.)
+**4. Repeat** for as many elements as you want — after each added task picking re-arms automatically, so a batch session is just click → type → Enter → click. The sidebar fills up with tasks. (Esc turns the crosshair off.)
 
 **5. Ship the batch** — choose one of three ways:
 
 | Button | What happens |
 |---|---|
-| **Copy all** | Markdown of every task lands on your clipboard. Paste into any chat, editor, or doc. Lightweight (no inline image data). The batch is also saved to the local inbox (if `tsayru-server` is running) so MCP can fetch the screenshots. |
-| **Copy single task** (the `⧉` icon on each row) | Same as above, but only that one task. |
-| **To Claude** | Picks an open `claude.ai` or `claude.com` tab, injects the markdown, attaches the screenshots as image files, and presses Send. No keyboard step. |
+| **Send to Claude** | Picks an open `claude.ai` or `claude.com` tab, injects the markdown, attaches the screenshots as image files, and presses Send. No keyboard step. |
+| **Copy** | Markdown of every task in view lands on your clipboard. Paste into any chat, editor, or doc. Lightweight (no inline image data). The batch is also saved to the local inbox (if `tsayru-server` is running) so MCP can fetch the screenshots. |
+| **Copy this task** (the copy icon on a row) | Same as above, but only that one task. |
 
-You can also filter tasks by host (the tabs above the list), edit a task in place (`✎`), or clear them all at once.
+You can also filter tasks by site (the segmented control above the list) or by `#tag`, edit a task in place (pencil icon; Enter saves, Esc cancels), or **Clear** the tasks in view — with an undo.
 
 ### Restyling with the style editor
 
-Instead of describing a change, make it: with the sidebar open, **`⌘+click`** (`Ctrl+click` on Windows/Linux) any element. Holding the key outlines what a click will pick; a click on a button's label picks the button (the breadcrumbs lead back down to the label).
+Instead of describing a change, make it: press **Restyle** next to the blue key and click an element — or, with the sidebar open, **`⌘+click`** (`Ctrl+click` on Windows/Linux) it straight away. Holding the key outlines what a click will pick; a click on a button's label picks the button (the breadcrumbs lead back down to the label).
 
 - **Quick** — text and background colour (with opacity), border, radius, shadow layers with presets, margin / padding / size as a box model, gap, font size / weight / line height / letter spacing / alignment. Values preview live; `↑`/`↓` nudge numbers (`Shift` ×10, `Alt` ×0.1); a label marked `↺` resets its property.
 - **CSS** — every rule that styles the element, one state at a time: Default, Hover, Focus, Focus-visible, Active, Before, After. Picking Hover/Focus/Active also shows the element in that state on the page. Edit values and names, tick declarations off and on, delete, add (`name:` jumps to the value), or start a new rule for a state the page doesn't style yet. Overridden declarations are struck through; rules shared by many elements say how many; global `*` resets are folded away.
@@ -147,7 +148,8 @@ Now in any Claude Code chat, you can say *"check tsayru for new tasks"* and Clau
 │  ┌──────────────────────┐   ┌────────────────┐   │
 │  │  content.js          │   │  inject.js     │   │
 │  │  (ISOLATED world)    │←─→│  (MAIN world,  │   │
-│  │  · sidebar UI        │   │   lazy-injected│   │
+│  │  · sidebar UI (closed│   │   lazy-injected│   │
+│  │    shadow root)      │   │                │   │
 │  │  · selector builder  │   │   on demand)   │   │
 │  │  · modal + inspector │   │  · React fiber │   │
 │  └──────┬───────────────┘   └────────────────┘   │
@@ -185,16 +187,21 @@ tsayru/
 │   ├── selector.js      smart CSS-selector builder
 │   ├── framework.js     postMessage bridge to inject.js
 │   ├── screenshot.js    captureVisibleTab + canvas crop
-│   ├── inspector.js     mousemove/click/keyboard handlers
+│   ├── inspector.js     mousemove/click/keyboard handlers, page highlight
 │   ├── styleeditor.js   ⌘+click style editor: session, previews, saving
 │   ├── stylepanel.js    style panel shell (+ stylequick / stylerules tabs,
 │   │                    stylewidgets inputs, stylepanel-css theme)
 │   ├── cssrules.js      which CSS rules style an element, by state; forced states
 │   ├── stylevalues.js   colour / length / shadow value helpers
 │   ├── stylechanges.js  style change records → markdown
+│   ├── ui.js            UI shadow host: dialogs, toasts (+ ui-css styles)
+│   ├── shadowhost.js    closed shadow root + event isolation (UI, style editor)
+│   ├── theme-css.js     design tokens: light "chalk" / dark "graphite"
+│   ├── icons.js         inline SVG icons, brand mark, shell speckle
+│   ├── fonts.js         loads Onest into document.fonts
 │   ├── sidebar.js       sidebar UI, copy / clear / send
-│   ├── modal.js         "task for this element" dialog
-│   ├── chatpicker.js    web-chat picker for "To Claude"
+│   ├── modal.js         "new task" dialog
+│   ├── chatpicker.js    web-chat picker for "Send to Claude"
 │   └── format.js        markdown rendering
 │
 ├── extension/           what Chrome loads as the extension
@@ -202,7 +209,8 @@ tsayru/
 │   ├── background.js    service worker
 │   ├── content.js       BUNDLED OUTPUT (do not edit by hand)
 │   ├── inject.js        MAIN-world fiber probe (lazy-injected on demand)
-│   ├── content.css      sidebar / modal / picker styles
+│   ├── content.css      the picking cursor (all other UI is in shadow roots)
+│   ├── fonts/           Onest, latin + cyrillic (SIL OFL)
 │   └── icons/           toolbar icons
 │
 ├── server/              optional companion
@@ -265,6 +273,7 @@ Tested on Chrome, Arc, and Brave (anything Chromium ≥ 111). Not compatible wit
 - ~~Cross-machine batch sync~~ — v0.16.0 (`TSAYRU_INBOX` on a synced folder)
 - ~~Team mode: shared inbox for collaborators~~ — v0.16.0 (`TSAYRU_BIND` + `TSAYRU_TOKEN` + extension options page)
 - Style editor — v0.17.0 (`⌘+click`: restyle live, edit rules by state, ship the exact changes)
+- Redesign — v0.18.0 (light/dark tactile UI, Restyle key, shadow-root isolation)
 
 The original roadmap is complete. Next milestone: Chrome Web Store release.
 
@@ -279,3 +288,5 @@ MIT — see [LICENSE](LICENSE).
 ## Credits
 
 Built collaboratively by [@salgiri](https://github.com/salgiri) and Claude (Opus 4.7).
+
+UI typeface: [Onest](https://github.com/simpals/onest) by The Onest Project Authors, under the SIL Open Font License 1.1 (`extension/fonts/OFL.txt`).

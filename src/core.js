@@ -4,6 +4,7 @@ export const STORAGE_KEY = "tsayru_tasks";
 
 export const state = {
   inspecting: false,
+  pickMode: "task", // what an inspector click does: "task" (modal) or "style" (style editor)
   hovered: null,
   tasks: [],
   editingTaskIndex: null,
@@ -14,11 +15,19 @@ export const state = {
 // Mutable DOM references shared across modules.
 // Imports get a live reference to this object — mutating its properties is observable everywhere.
 export const refs = {
+  ui: null, // the host of everything below (ui.js) — sidebar, dialogs, toasts, highlight
   highlight: null,
   sidebar: null,
   modal: null,
   styleHost: null, // the style editor's panel + outline (styleeditor.js)
 };
+
+export const sidebarVisible = () =>
+  !!refs.sidebar && !refs.sidebar.classList.contains("hidden");
+
+export const IS_MAC = /mac|iphone|ipad/i.test(
+  navigator.userAgentData?.platform || navigator.platform || "",
+);
 
 // Tiny internal event bus. Unlike window CustomEvents, page scripts cannot
 // dispatch into it — state-changing signals (e.g. "task-added" re-arming the
@@ -90,8 +99,8 @@ export const persist = async () => {
       new CustomEvent("tsayru-persist-error", {
         detail: {
           message: quota
-            ? "out of storage — delete old tasks"
-            : "save error",
+            ? "Storage is full. Delete old tasks to save new ones"
+            : "Couldn't save tasks",
         },
       }),
     );

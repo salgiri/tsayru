@@ -1,59 +1,42 @@
-// Sidebar: container, header, controls, list rendering, per-task UI (view/edit modes), tabs by host.
-// Also: copy-to-clipboard and clear handlers, flash toast.
+// Sidebar: the pick keys, filters (hosts, #tags), the task list (view/edit
+// modes) and the ship bar (send, copy, clear). Lives in the UI shadow root
+// (ui.js). Also: copy-to-clipboard, inbox posting, done-status polling.
 
-import { el, state, refs, safeHost, plural, persist } from "./core.js";
+import { el, state, refs, safeHost, plural, persist, IS_MAC } from "./core.js";
 import { formatTasks, formatTask, filterByHost, taskTags } from "./format.js";
 import { queryDeep } from "./selector.js";
 import {
   toggleInspector,
+  toggleStylePick,
   hideSidebar,
   ensureOverlay,
   moveHighlight,
 } from "./inspector.js";
 import { pickTargetChat } from "./chatpicker.js";
+import { uiLayer, toast, hints } from "./ui.js";
+import { icon, brandMark, grain } from "./icons.js";
 
-export const flash = (msg) => {
-  const tip = el("div", { class: "tsayru-flash" }, msg);
-  document.documentElement.appendChild(tip);
-  setTimeout(() => tip.remove(), 1400);
-};
-
-// Toast with a single action button (used for "cleared · undo").
-const flashAction = (msg, actionLabel, onAction, ttl = 8000) => {
-  const btn = el(
-    "button",
-    {
-      class: "tsayru-flash-btn",
-      onClick: () => {
-        tip.remove();
-        onAction();
-      },
-    },
-    actionLabel,
-  );
-  const tip = el("div", { class: "tsayru-flash tsayru-flash-action" }, msg, btn);
-  document.documentElement.appendChild(tip);
-  setTimeout(() => tip.remove(), ttl);
-};
+export const flash = (msg, opts) => toast(msg, opts);
+const warn = (msg) => toast(msg, { warn: true });
 
 // Surface persist quota / I/O errors from core.js (avoids import cycle).
 window.addEventListener("tsayru-persist-error", (e) => {
-  flash(e?.detail?.message || "save error");
+  warn(e?.detail?.message || "Couldn't save tasks");
 });
 
 // Surface screenshot-capture failures from screenshot.js (same pattern) —
 // previously a missing activeTab grant just silently dropped the screenshot.
 window.addEventListener("tsayru-capture-error", (e) => {
-  flash(e?.detail?.message || "screenshot failed");
+  warn(e?.detail?.message || "Screenshot failed");
 });
 
 const writeClipboard = async (text, okMsg) => {
   try {
     await navigator.clipboard.writeText(text);
-    flash(okMsg);
+    flash(okMsg, { iconName: "copy" });
   } catch (err) {
     console.warn("[tsayru] clipboard write failed:", err);
-    flash("clipboard error");
+    warn("Couldn't write to the clipboard");
   }
 };
 
@@ -63,10 +46,10 @@ const copyAll = async () => {
     filterTag: state.filterTag,
   });
   if (!text) {
-    flash("nothing to copy");
+    warn("Nothing to copy yet");
     return;
   }
-  await writeClipboard(text, "copied");
+  await writeClipboard(text, `Copied ${tasks.length} task${plural(tasks.length)}`);
   // Best-effort inbox save so the copied batch (with screenshots) is also
   // retrievable via MCP when the local server is running. Silent on failure —
   // clipboard already succeeded, which is what the user asked for.
@@ -76,7 +59,7 @@ const copyAll = async () => {
 };
 
 const copyOne = async (task, displayIndex) => {
-  await writeClipboard(formatTask(task, displayIndex), "task copied");
+  await writeClipboard(formatTask(task, displayIndex), "Task copied");
 };
 
 // The current filter scope — what the user actually sees in the list.
@@ -154,8 +137,7 @@ const pushToWebChat = (tabId, content, images) =>
 // Push to a selected web-chat tab. The picker only ever returns "online" targets
 // now, so there's no local/clipboard branch.
 const sendBatch = async (tasks, target) => {
-  const label = target?.title || "web chat";
-  const where = ` → ${label}`;
+  const label = target?.title || "the chat";
 
   // Persist to inbox in background — audit trail, useful if user later wants
   // to retrieve the batch via MCP. Don't block the inject on this.
@@ -174,23 +156,23 @@ const sendBatch = async (tasks, target) => {
   const images = tasks.map((t) => t.screenshot).filter(Boolean);
   const inject = await pushToWebChat(target.tabId, md, images);
   if (inject.ok) {
-    flash(`sent${where} ✓`);
+    flash(`Sent to ${label}`, { iconName: "send" });
     return;
   }
   console.warn("[tsayru] inject failed:", inject.error);
   if (isContextInvalidated(inject.error)) {
-    flash("reload page (Cmd+R)");
+    warn(`tsayru was updated. Reload this page (${IS_MAC ? "⌘R" : "F5"})`);
   } else if (/chat input not found/i.test(String(inject.error))) {
-    flash(`inject failed: no chat input on this tab`);
+    warn("No chat input on that tab. Open a chat there and try again");
   } else {
-    flash(`inject failed${where}`);
+    warn(`Couldn't send to ${label}`);
   }
 };
 
 const sendToServer = async () => {
   const tasks = visibleTasks();
   if (tasks.length === 0) {
-    flash("nothing to send");
+    warn("Nothing to send yet");
     return;
   }
   const target = await pickTargetChat();
@@ -203,7 +185,7 @@ const sendToServer = async () => {
 // through matching tasks. Silent when the server is down — this is an
 // optional enhancement, not a dependency.
 const pollDoneStatus = () => {
-  if (!refs.sidebar || refs.sidebar.classList.contains("tsayru-hidden")) return;
+  if (!refs.sidebar || refs.sidebar.classList.contains("hidden")) return;
   if (!state.tasks.some((t) => t.id && !t.done)) return;
   try {
     chrome.runtime.sendMessage(
@@ -263,173 +245,287 @@ const clearTasks = () => {
   state.editingTaskIndex = null;
   persist();
   renderSidebar();
-  flashAction(
-    `cleared ${removed.length} task${plural(removed.length)}`,
-    "undo",
-    () => {
-      state.tasks.push(...removed);
-      persist();
-      renderSidebar();
+  toast(`Cleared ${removed.length} task${plural(removed.length)}`, {
+    iconName: "trash",
+    action: {
+      label: "Undo",
+      run: () => {
+        state.tasks.push(...removed);
+        persist();
+        renderSidebar();
+      },
     },
+  });
+};
+
+const actButton = (name, label, onClick) =>
+  el("button", { class: "act", title: label, "aria-label": label, onClick }, icon(name));
+
+// The edit draft survives re-renders (done-status polling, inspector toggles).
+let editDraft = null;
+
+const editTask = (idx) => {
+  state.editingTaskIndex = idx;
+  editDraft = null;
+  renderSidebar();
+};
+
+const deleteTask = (idx) => {
+  state.tasks.splice(idx, 1);
+  if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
+  else if (state.editingTaskIndex !== null && state.editingTaskIndex > idx) {
+    state.editingTaskIndex -= 1;
+  }
+  persist();
+  renderSidebar();
+};
+
+const renderEditor = (task, idx) => {
+  const ta = el("textarea", {
+    class: "field",
+    rows: 3,
+    "aria-label": "Task text",
+    placeholder: "What should change here?",
+  });
+  ta.value = editDraft ?? task.text;
+  ta.addEventListener("input", () => {
+    editDraft = ta.value;
+  });
+  setTimeout(() => {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }, 0);
+
+  const save = () => {
+    const v = ta.value.trim();
+    if (!v) {
+      ta.focus();
+      return;
+    }
+    state.tasks[idx].text = v;
+    state.editingTaskIndex = null;
+    editDraft = null;
+    persist();
+    renderSidebar();
+  };
+  const cancel = () => {
+    state.editingTaskIndex = null;
+    editDraft = null;
+    renderSidebar();
+  };
+  // Keys reach fields in the shadow root only through __tsayruKey
+  // (shadowhost.js stops them before the page — and element listeners — see them).
+  ta.__tsayruKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      save();
+      return true;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancel();
+      return true;
+    }
+    return false;
+  };
+
+  return el(
+    "div",
+    { class: "edit" },
+    ta,
+    el(
+      "div",
+      { class: "edit-ft" },
+      el("button", { class: "btn quiet small", onClick: cancel }, "Cancel", el("span", { class: "kbd-in" }, "Esc")),
+      el("button", { class: "btn ink small", onClick: save }, "Save", el("span", { class: "kbd-in" }, "↵")),
+    ),
   );
 };
 
 const renderTask = (task, idx, displayNum) => {
-  if (state.editingTaskIndex === idx) {
-    const ta = el("textarea", { class: "tsayru-task-edit-input", rows: 3 });
-    ta.value = task.text;
-    setTimeout(() => {
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-    }, 0);
-
-    const save = () => {
-      const v = ta.value.trim();
-      if (!v) {
-        ta.focus();
-        return;
-      }
-      state.tasks[idx].text = v;
-      state.editingTaskIndex = null;
-      persist();
-      renderSidebar();
-    };
-    const cancel = () => {
-      state.editingTaskIndex = null;
-      renderSidebar();
-    };
-    ta.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        save();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancel();
-      }
-    });
-
-    return el(
-      "div",
-      { class: "tsayru-task tsayru-task-editing" },
-      el(
-        "div",
-        { class: "tsayru-task-head" },
-        el("span", { class: "tsayru-task-num" }, `#${displayNum}`),
-        el("span", { class: "tsayru-task-label" }, task.label),
-        el(
-          "button",
-          {
-            class: "tsayru-task-save",
-            title: "Save (Enter)",
-            onClick: save,
-          },
-          "✓",
-        ),
-        el(
-          "button",
-          {
-            class: "tsayru-task-cancel",
-            title: "Cancel (Esc)",
-            onClick: cancel,
-          },
-          "↩",
-        ),
-      ),
-      el("div", { class: "tsayru-task-sel" }, task.selector),
-      ta,
-    );
-  }
-
+  const editing = state.editingTaskIndex === idx;
+  const styleTask = !!task.styleChanges?.length;
   return el(
     "div",
     {
-      class: "tsayru-task" + (task.done ? " tsayru-task-done" : ""),
+      class: "task" + (task.done ? " done" : "") + (editing ? " editing" : ""),
       onMouseEnter: () => onTaskHover(task.selector),
       onMouseLeave: onTaskLeave,
     },
     el(
       "div",
-      { class: "tsayru-task-head" },
-      el("span", { class: "tsayru-task-num" }, `#${displayNum}`),
-      el("span", { class: "tsayru-task-label" }, task.label),
-      el(
-        "button",
-        {
-          class: "tsayru-task-copy",
-          title: "Copy this task",
-          onClick: () => copyOne(task, displayNum),
-        },
-        "⧉",
-      ),
-      el(
-        "button",
-        {
-          class: "tsayru-task-edit",
-          title: "Edit",
-          onClick: () => {
-            state.editingTaskIndex = idx;
-            renderSidebar();
-          },
-        },
-        "✎",
-      ),
-      el(
-        "button",
-        {
-          class: "tsayru-task-del",
-          title: "Delete",
-          onClick: () => {
-            state.tasks.splice(idx, 1);
-            if (state.editingTaskIndex === idx) state.editingTaskIndex = null;
-            else if (
-              state.editingTaskIndex !== null &&
-              state.editingTaskIndex > idx
-            ) {
-              state.editingTaskIndex -= 1;
-            }
-            persist();
-            renderSidebar();
-          },
-        },
-        "×",
-      ),
+      { class: "num", title: task.done ? "Done — Claude marked it" : null },
+      task.done ? icon("check") : String(displayNum),
     ),
-    el("div", { class: "tsayru-task-sel" }, task.selector),
-    // Style-editor tasks speak through their change list; no nag for text.
-    task.text || !task.styleChanges?.length
-      ? el(
-          "div",
-          {
-            class:
-              "tsayru-task-text" + (task.text ? "" : " tsayru-task-text-empty"),
-          },
-          task.text || "no description — click ✎ to add",
-        )
-      : null,
-    task.styleChanges?.length ? styleSummary(task.styleChanges) : null,
+    el(
+      "div",
+      { class: "body" },
+      el(
+        "div",
+        { class: "row1" },
+        el("span", { class: "label", title: task.label }, task.label),
+        editing
+          ? null
+          : el(
+              "div",
+              { class: "acts" },
+              actButton("copy", "Copy this task", () => copyOne(task, displayNum)),
+              actButton("edit", "Edit", () => editTask(idx)),
+              actButton("close", "Delete", () => deleteTask(idx)),
+            ),
+      ),
+      el("div", { class: "sel", title: task.selector }, task.selector),
+      editing
+        ? renderEditor(task, idx)
+        : // Style-editor tasks speak through their change list; no nag for text.
+          task.text || !styleTask
+          ? el("div", { class: "text" + (task.text ? "" : " empty") }, task.text || "No note yet")
+          : null,
+      styleTask && !editing ? styleSummary(task.styleChanges) : null,
+    ),
   );
 };
 
-// "3 style changes · background-color, padding-left, box-shadow"
+// [3 style changes] background-color, padding-left, box-shadow
 const styleSummary = (changes) => {
   const props = [...new Set(changes.map((c) => c.property))];
-  const shown = props.slice(0, 4).join(", ") + (props.length > 4 ? ", …" : "");
   return el(
     "div",
     {
-      class: "tsayru-task-style",
+      class: "styled",
       title: changes
         .map((c) => `${c.property}: ${c.before ?? "—"} → ${c.after ?? "removed"}`)
         .join("\n"),
     },
-    `${changes.length} style change${plural(changes.length)} · ${shown}`,
+    el("span", { class: "chip" }, icon("sliders"), `${changes.length} style change${plural(changes.length)}`),
+    el("span", { class: "props" }, props.join(", ")),
   );
+};
+
+const renderFilters = (hosts, hostScoped, allTags) => {
+  const box = refs.sidebar.querySelector(".filters");
+  box.replaceChildren();
+  if (hosts.length > 1) {
+    const seg = el("div", { class: "seg", role: "tablist", "aria-label": "Sites" });
+    const mkTab = (label, value, count) =>
+      el(
+        "button",
+        {
+          class: state.filterHost === value ? "on" : "",
+          role: "tab",
+          "aria-selected": String(state.filterHost === value),
+          title: label,
+          onClick: () => {
+            state.filterHost = value;
+            renderSidebar();
+          },
+        },
+        el("span", {}, label),
+        el("span", { class: "n" }, String(count)),
+      );
+    seg.appendChild(mkTab("All", null, state.tasks.length));
+    for (const h of hosts) {
+      seg.appendChild(mkTab(h, h, state.tasks.filter((t) => safeHost(t.url) === h).length));
+    }
+    box.appendChild(seg);
+  }
+  // Tag chips — rendered only when hashtags exist, so the row costs nothing
+  // for users who never type #tags.
+  if (allTags.length > 0) {
+    const row = el("div", { class: "tags" });
+    for (const tag of allTags) {
+      const n = hostScoped.filter((t) => taskTags(t.text).includes(tag)).length;
+      const active = state.filterTag === tag;
+      row.appendChild(
+        el(
+          "button",
+          {
+            class: "tag" + (active ? " on" : ""),
+            "aria-pressed": String(active),
+            title: active ? "Show all tags" : `Only tasks tagged #${tag}`,
+            onClick: () => {
+              state.filterTag = active ? null : tag; // toggle
+              renderSidebar();
+            },
+          },
+          icon("hash"),
+          tag,
+          el("span", { class: "n" }, String(n)),
+        ),
+      );
+    }
+    box.appendChild(row);
+  }
+  box.hidden = !box.childElementCount;
+};
+
+const STEPS = [
+  ["Pick an element", "Press the blue key and click anything."],
+  ["Say what should change", "Plain words are enough. Enter adds the task."],
+  ["Send to Claude", "Screenshots and source files go along."],
+];
+
+const renderEmpty = (list) => {
+  if (state.filterHost || state.filterTag) {
+    list.appendChild(
+      el(
+        "div",
+        { class: "nothing" },
+        "No tasks match this filter.",
+        el(
+          "button",
+          {
+            onClick: () => {
+              state.filterHost = null;
+              state.filterTag = null;
+              renderSidebar();
+            },
+          },
+          "Show all tasks",
+        ),
+      ),
+    );
+    return;
+  }
+  list.appendChild(
+    el(
+      "ol",
+      { class: "steps" },
+      ...STEPS.map(([title, line], i) =>
+        el(
+          "li",
+          {},
+          el("span", { class: "num" }, String(i + 1)),
+          el("div", {}, el("b", {}, title), el("p", {}, line)),
+        ),
+      ),
+    ),
+  );
+};
+
+const renderDeck = () => {
+  const picking = state.inspecting;
+  const styling = picking && state.pickMode === "style";
+  const pick = refs.sidebar.querySelector(".pick");
+  pick.classList.toggle("on", picking);
+  pick.setAttribute("aria-pressed", String(picking));
+  pick.querySelector(".disc").replaceChildren(icon(styling ? "sliders" : "target"));
+  pick.querySelector(".pick-title").textContent = !picking
+    ? "Pick an element"
+    : styling
+      ? "Click to restyle"
+      : "Click any element";
+  pick.querySelector(".pick-sub").hidden = !picking;
+  pick.querySelector(".led").hidden = !picking;
+  const restyle = refs.sidebar.querySelector(".deck .square");
+  restyle.classList.toggle("on", styling);
+  restyle.setAttribute("aria-pressed", String(styling));
 };
 
 export const renderSidebar = () => {
   if (!refs.sidebar) return;
-  const list = refs.sidebar.querySelector(".tsayru-list");
-  list.innerHTML = "";
+  const list = refs.sidebar.querySelector(".list");
+  list.replaceChildren();
 
   const hosts = [
     ...new Set(state.tasks.map((t) => safeHost(t.url)).filter(Boolean)),
@@ -444,67 +540,11 @@ export const renderSidebar = () => {
   if (state.filterTag && !allTags.includes(state.filterTag)) {
     state.filterTag = null;
   }
-
-  if (hosts.length > 1) {
-    const tabs = el("div", { class: "tsayru-tabs" });
-    const mkTab = (label, value, count) => {
-      const active = state.filterHost === value;
-      return el(
-        "button",
-        {
-          class: "tsayru-tab" + (active ? " tsayru-tab-active" : ""),
-          onClick: () => {
-            state.filterHost = value;
-            renderSidebar();
-          },
-        },
-        `${label} · ${count}`,
-      );
-    };
-    tabs.appendChild(mkTab("All", null, state.tasks.length));
-    for (const h of hosts) {
-      const n = state.tasks.filter((t) => safeHost(t.url) === h).length;
-      tabs.appendChild(mkTab(h, h, n));
-    }
-    list.appendChild(tabs);
-  }
-
-  // Tag chips — rendered only when hashtags exist, so the row costs nothing
-  // for users who never type #tags.
-  if (allTags.length > 0) {
-    const row = el("div", { class: "tsayru-tagrow" });
-    for (const tag of allTags) {
-      const n = hostScoped.filter((t) => taskTags(t.text).includes(tag)).length;
-      const active = state.filterTag === tag;
-      row.appendChild(
-        el(
-          "button",
-          {
-            class: "tsayru-tagchip" + (active ? " tsayru-tagchip-active" : ""),
-            onClick: () => {
-              state.filterTag = active ? null : tag; // toggle
-              renderSidebar();
-            },
-          },
-          `#${tag} · ${n}`,
-        ),
-      );
-    }
-    list.appendChild(row);
-  }
+  renderFilters(hosts, hostScoped, allTags);
 
   const filtered = visibleTasks();
-
   if (filtered.length === 0) {
-    list.appendChild(
-      el(
-        "div",
-        { class: "tsayru-empty" },
-        state.filterHost || state.filterTag
-          ? `No tasks for ${[state.filterHost, state.filterTag && `#${state.filterTag}`].filter(Boolean).join(" · ")}.`
-          : "Enable the inspector and click an element to add a task.",
-      ),
-    );
+    renderEmpty(list);
   } else {
     filtered.forEach((task, fi) => {
       const idx = state.tasks.indexOf(task);
@@ -514,73 +554,105 @@ export const renderSidebar = () => {
     });
   }
 
-  const counter = refs.sidebar.querySelector(".tsayru-counter");
-  counter.textContent = state.tasks.length
-    ? `${state.tasks.length} task${plural(state.tasks.length)}`
-    : "empty";
-
-  const inspectBtn = refs.sidebar.querySelector(".tsayru-inspect-btn");
-  inspectBtn.classList.toggle("tsayru-active", state.inspecting);
-  inspectBtn.textContent = state.inspecting
-    ? "Disable inspector"
-    : "Enable inspector";
+  const n = state.tasks.length;
+  refs.sidebar.querySelector(".tally").textContent = n ? `${n} task${plural(n)}` : "No tasks";
+  for (const b of refs.sidebar.querySelectorAll(".ship button")) {
+    b.disabled = filtered.length === 0;
+  }
+  renderDeck();
 };
 
 export const ensureSidebar = () => {
   if (refs.sidebar) return;
+  const quick = IS_MAC ? "⌥ click" : "Alt click";
+  const restyleKeys = IS_MAC ? "⌘ click" : "Ctrl click";
   refs.sidebar = el(
     "div",
-    { class: "tsayru-sidebar" },
+    { class: "panel shell", role: "complementary", "aria-label": "tsayru" },
+    grain(),
     el(
       "div",
-      { class: "tsayru-header" },
-      el("div", { class: "tsayru-title" }, "tsayru"),
-      el("div", { class: "tsayru-counter" }, "empty"),
+      { class: "hd" },
+      el("div", { class: "mark" }, brandMark()),
+      el("div", { class: "word" }, "tsayru"),
+      el("div", { class: "tally" }, "No tasks"),
       el(
         "button",
         {
-          class: "tsayru-close",
-          title: "Hide (turns inspector off)",
+          class: "round",
+          title: "Hide the panel (turns picking off)",
+          "aria-label": "Hide the panel",
           onClick: () => hideSidebar(),
         },
-        "—",
+        icon("hide"),
       ),
     ),
     el(
       "div",
-      { class: "tsayru-controls" },
+      { class: "deck" },
       el(
         "button",
         {
-          class: "tsayru-inspect-btn",
+          class: "pick",
+          title: "Click an element on the page to add a task about it",
           onClick: () => toggleInspector(),
         },
-        "Enable inspector",
-      ),
-      el(
-        "button",
-        { class: "tsayru-copy-btn", onClick: copyAll },
-        "Copy all",
+        el("span", { class: "disc" }, icon("target")),
+        el(
+          "span",
+          { class: "pick-label" },
+          el("span", { class: "pick-title" }, "Pick an element"),
+          el("span", { class: "pick-sub", hidden: true }, "Esc to stop"),
+        ),
+        el("span", { class: "led", hidden: true }),
       ),
       el(
         "button",
         {
-          class: "tsayru-send-btn",
-          title:
-            "Send batch to an open claude.ai / claude.com tab (auto-submit)",
+          class: "square",
+          title: `Click an element to restyle it (or ${restyleKeys} it any time)`,
+          onClick: () => toggleStylePick(),
+        },
+        icon("sliders"),
+        "Restyle",
+      ),
+    ),
+    hints([
+      [quick, "Quick add"],
+      [restyleKeys, "Restyle"],
+    ]),
+    el("div", { class: "groove" }),
+    el("div", { class: "filters", hidden: true }),
+    el("div", { class: "list" }),
+    el("div", { class: "groove" }),
+    el(
+      "div",
+      { class: "ship" },
+      el(
+        "button",
+        {
+          class: "send",
+          title: "Paste the tasks into an open Claude chat and send them",
           onClick: sendToServer,
         },
-        "To Claude",
+        el("span", { class: "disc" }, icon("send")),
+        el("span", { class: "send-label" }, "Send to Claude"),
       ),
       el(
         "button",
-        { class: "tsayru-clear-btn", onClick: clearTasks },
+        { class: "square", title: "Copy the tasks as Markdown", onClick: copyAll },
+        icon("copy"),
+        "Copy",
+      ),
+      el(
+        "button",
+        { class: "square", title: "Clear the tasks in view (you can undo)", onClick: clearTasks },
+        icon("trash"),
         "Clear",
       ),
     ),
-    el("div", { class: "tsayru-list" }),
   );
-  document.documentElement.appendChild(refs.sidebar);
+  uiLayer().appendChild(refs.sidebar);
   ensureDonePolling();
   renderSidebar();
 };
